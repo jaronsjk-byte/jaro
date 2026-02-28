@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+Pillow
+requests
+streamlit-lottie
+nltk
+google-generativeai
