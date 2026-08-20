@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  web:
+    name: web (typecheck + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Regenerate KB and fail if it drifts from docs/help
+        run: |
+          npm run build:kb
+          git diff --exit-code lib/kb-data.ts
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+
+  python:
+    name: python (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests pytest
+      - run: pytest -q
+
+  secrets:
+    name: no committed secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan tracked files for key-shaped strings
+        run: |
+          if git grep -nE 'AIzaSy|pplx-[A-Za-z0-9]|sk-[A-Za-z0-9]{16}' -- . ; then
+            echo "::error::A key-shaped string is committed. Remove it and rotate the key."
+            exit 1
+          fi
+          echo "clean"
