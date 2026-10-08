@@ -3263,76 +3263,42 @@ def page_profile():
     
     with tab1:
         st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
-        st.markdown('<div class="phase-badge-premium" style="margin-bottom: 1rem; background: linear-gradient(90deg, #3b82f6, #2dd4bf); color: white; border:none;">METRICS & INSIGHTS</div>', unsafe_allow_html=True)
-        st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 2rem; font-size: 2.2rem;">Core Improvement Analytics</h3>', unsafe_allow_html=True)
-        
-        ca1, ca2 = st.columns([1, 1.5])
-        
+        st.markdown('<div class="phase-badge-premium" style="margin-bottom:1rem;background:linear-gradient(90deg,#f97316,#fb7185);color:white;border:none;">RECORDED METRICS</div>', unsafe_allow_html=True)
+        st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom:2rem;font-size:2.2rem;">Your Current Signals</h3>', unsafe_allow_html=True)
+        ca1,ca2=st.columns([1,1.5])
+        completed_today=sum([st.session_state.task_1,st.session_state.task_2,st.session_state.task_3])
+        focus=st.session_state.stats_data.get("Focus",0)
+        sleep=st.session_state.stats_data.get("Sleep",0)
+        energy=st.session_state.stats_data.get("Energy",0)
+        breathing_sessions=len(st.session_state.breathing_history)
+        game_points=(st.session_state.tic_scores.get("X",0)*100+st.session_state.jumble_score+st.session_state.memory_score+st.session_state.focus_score+st.session_state.word_score)
         with ca1:
-            st.markdown(f"""
-            <div class="wellness-card-stat" style="margin-bottom: 1.5rem; border-left: 4px solid #3b82f6; background: rgba(59, 130, 246, 0.05);">
-                <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 1px;">Cognitive Load Capacity</div>
-                <div style="font-size: 3rem; font-weight: 900; color: white;">{st.session_state.stats_data.get('Focus', 6) * 11.2:.1f}%</div>
-                <div style="font-size: 0.9rem; color: #34d399; margin-top: 5px; font-weight: 600;">↑ 4.2% from last week</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.markdown(f"""
-            <div class="wellness-card-stat" style="margin-bottom: 1.5rem; border-left: 4px solid #8b5cf6; background: rgba(139, 92, 246, 0.05);">
-                <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 1px;">Deep Work Hours</div>
-                <div style="font-size: 3rem; font-weight: 900; color: white;">{st.session_state.get('focus_total_played', 0)}<span style="font-size:1.5rem; color:var(--text-muted);">h</span></div>
-                <div style="font-size: 0.9rem; color: #f43f5e; margin-top: 5px; font-weight: 600;">↓ 1.1h from peak</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            st.markdown(f"""
-            <div class="wellness-card-stat" style="border-left: 4px solid #ec4899; background: rgba(236, 72, 153, 0.05);">
-                <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 1px;">Recovery Index</div>
-                <div style="font-size: 3rem; font-weight: 900; color: white;">{st.session_state.stats_data.get('Sleep', 7) * 9.8:.1f}/100</div>
-                <div style="font-size: 0.9rem; color: #34d399; margin-top: 5px; font-weight: 600;">Optimal Regeneration</div>
-            </div>
-            """, unsafe_allow_html=True)
-
+            for label,value in [
+                ("Energy Check-in",f"{energy}/10"),("Focus Check-in",f"{focus}/10"),
+                ("Sleep Check-in",f"{sleep}/10"),("Tasks Completed",f"{completed_today}/3"),
+                ("Breathing Sessions",str(breathing_sessions)),("Arcade Points",str(game_points))
+            ]:
+                st.markdown(f"""<div class="wellness-card-stat" style="margin-bottom:1rem"><div style="font-size:.78rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;letter-spacing:1px">{label}</div><div style="font-size:2.2rem;font-weight:900;color:white;margin-top:4px">{value}</div></div>""",unsafe_allow_html=True)
         with ca2:
-            st.markdown('<p style="font-weight: 700; color: var(--text-main); font-size: 1.2rem; margin-bottom: 1.5rem;">Performance Trajectory (30-Day View)</p>', unsafe_allow_html=True)
-            
-            # Simulated complex performance data
-            days = range(1, 31)
-            np.random.seed(42)  # For consistent graph shape
-            base_trend = np.linspace(40, 85, 30)
-            noise = np.random.normal(0, 5, 30)
-            performance = np.clip(base_trend + noise, 0, 100)
-            
-            chart_data = pd.DataFrame(
-                performance,
-                columns=["Improvement Score"],
-                index=days
-            )
-            
-            # Using line chart to show trajectory
-            st.line_chart(chart_data, color="#8b5cf6", height=280)
-            
-            st.markdown("""
-            <div style="display: flex; gap: 1rem; margin-top: 1.5rem; font-size: 0.9rem; color: var(--text-muted); background: rgba(255,255,255,0.02); padding: 1rem; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
-                <div style="flex:1;">
-                    <div style="color: white; font-weight: 700; margin-bottom: 5px;">Trend Analysis</div>
-                    Pattern shows a steady upward trajectory. Minor dips correlate with weekends or low-sleep days. 
-                    <br><strong style="color: #34d399;">Action:</strong> Maintain current workload intensity.
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            col_btn1, col_btn2 = st.columns(2)
+            st.markdown('<p style="font-weight:700;color:var(--text-main);font-size:1.2rem;margin-bottom:1.5rem;">Recorded Wellness Signals</p>',unsafe_allow_html=True)
+            chart_data=pd.DataFrame({"Score":[energy,focus,sleep,st.session_state.stats_data.get("Stress",0)]},index=["Energy","Focus","Sleep","Stress"])
+            st.bar_chart(chart_data,height=280,use_container_width=True)
+            st.markdown("""<div style="font-size:.9rem;color:var(--text-muted);background:rgba(255,255,255,.02);padding:1rem;border-radius:12px;border:1px solid rgba(255,255,255,.05)">Only recorded check-in values are shown. Historical trend claims are hidden until enough real history exists.</div>""",unsafe_allow_html=True)
+            col_btn1,col_btn2=st.columns(2)
             with col_btn1:
-                if st.button("Generate Detailed AI Insights 🧠", use_container_width=True):
-                    with st.spinner("Analyzing your data footprint..."):
-                        time.sleep(1.5)
-                        st.info("Analysis Complete: Your neuro-plasticity peaks during morning sessions. Shift complex tasks to 9AM-11AM window for a 15% efficiency boost.")
+                if st.button("Generate Detailed AI Insights 🧠",use_container_width=True):
+                    if not AI_ENABLED:
+                        st.warning("AI insights need a configured GOOGLE_API_KEY.")
+                    else:
+                        metrics={"energy":energy,"focus":focus,"sleep":sleep,"stress":st.session_state.stats_data.get("Stress",0),"tasks_completed":completed_today,"breathing_sessions":breathing_sessions}
+                        with st.spinner("Analyzing your recorded data..."):
+                            insight=get_ai_response(f"Analyze these recorded student wellness metrics: {json.dumps(metrics)}. Give 3 practical non-medical observations and 2 realistic next steps. Never invent missing data. Keep it under 180 words.",history=[])
+                        st.info(insight.text if hasattr(insight,"text") else insight)
             with col_btn2:
-                if st.button("Download Raw Dataset 📥", use_container_width=True):
-                    st.success("Dataset exported to local machine as user_metrics_v2.csv")
-
-        st.markdown('</div>', unsafe_allow_html=True)
+                export_rows=[{"username":st.session_state.user_data.get("username",""),"name":st.session_state.user_data.get("name",""),"mood":st.session_state.user_data.get("mood",""),"energy":energy,"focus":focus,"sleep":sleep,"stress":st.session_state.stats_data.get("Stress",0),"tasks_completed":completed_today,"breathing_sessions":breathing_sessions}]
+                csv_bytes=pd.DataFrame(export_rows).to_csv(index=False).encode("utf-8")
+                st.download_button("Download Recorded Data 📥",data=csv_bytes,file_name="chillmind_metrics.csv",mime="text/csv",use_container_width=True)
+        st.markdown('</div>',unsafe_allow_html=True)
 
     with tab2:
         st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
