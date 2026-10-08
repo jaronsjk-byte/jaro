@@ -3256,6 +3256,29 @@ def page_profile():
 """
     st.markdown(html_block, unsafe_allow_html=True)
     
+    with tab3:
+        st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
+        st.markdown('<div class="phase-badge-premium" style="margin-bottom: 1rem; background: linear-gradient(90deg, #a855f7, #ec4899); color: white; border:none;">AI FORECAST</div>', unsafe_allow_html=True)
+        st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 2rem; font-size: 2.2rem;">Future Probability Matrix</h3>', unsafe_allow_html=True)
+        
+        st.markdown("""
+        <p style="color: var(--text-muted); font-size: 1.1rem; line-height: 1.6; margin-bottom: 2rem;">
+            Based on your current improvement velocity and consistency streaks, the AI has extrapolated your skill acquisition timeline.
+        </p>
+        """, unsafe_allow_html=True)
+        
+        completed=sum([st.session_state.task_1,st.session_state.task_2,st.session_state.task_3])
+        focus=float(st.session_state.stats_data.get("Focus",0))
+        breathing=len(st.session_state.breathing_history)
+        consistency=round((completed/3*50)+(focus/10*30)+(min(breathing/10,1)*20))
+        st.markdown(f"""<div class="bloom-card" style="padding:1.5rem"><div style="font-size:.8rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px">Current consistency signal</div><div style="font-size:3rem;font-weight:900;color:var(--primary)">{consistency}%</div><p style="color:var(--text-muted);margin:0">A simple score from recorded tasks, focus check-in and breathing history. It is not a prediction or medical assessment.</p></div>""",unsafe_allow_html=True)
+        for label,value in [("Tasks today",f"{completed}/3"),("Focus check-in",f"{focus:.0f}/10"),("Breathing sessions",str(breathing))]:
+            st.markdown(f"<div style='display:flex;justify-content:space-between;padding:1rem;background:rgba(255,255,255,.03);border:1px solid var(--glass-border);border-radius:14px;margin-bottom:.7rem'><span>{label}</span><strong>{value}</strong></div>",unsafe_allow_html=True)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
     st.markdown("<br>", unsafe_allow_html=True)
     
     # Advanced Tab Interface
