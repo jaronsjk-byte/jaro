@@ -1,0 +1,12 @@
+# Local runtime data
+chillmind.db
+*.db
+
+# Secrets
+.streamlit/secrets.toml
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
