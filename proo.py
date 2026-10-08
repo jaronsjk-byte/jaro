@@ -1587,7 +1587,7 @@ def check_upcoming_tasks():
 
 def add_schedule_item(time,activity,icon,date):
     time=time.strip(); activity=activity.strip()
-    if not re.fullmatch(r"(?:[01]\\d|2[0-3]):[0-5]\\d",time): raise ValueError("Time must use HH:MM format.")
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d",time): raise ValueError("Time must use HH:MM format.")
     if not activity: raise ValueError("Activity cannot be empty.")
     next_id=max([int(item.get("id",0)) for item in st.session_state.schedule_items] or [0])+1
     st.session_state.schedule_items.append({"id":next_id,"time":time,"activity":activity,"icon":icon,"completed":False,"date":date})
@@ -3322,116 +3322,20 @@ def page_profile():
             </div>
             """, unsafe_allow_html=True)
             
-            col_btn1, col_btn2 = st.columns(2)
+            col_btn1,col_btn2=st.columns(2)
             with col_btn1:
-                if st.button("Generate Detailed AI Insights 🧠", use_container_width=True):
-                    with st.spinner("Analyzing your data footprint..."):
-                        time.sleep(1.5)
-                        st.info("Analysis Complete: Your neuro-plasticity peaks during morning sessions. Shift complex tasks to 9AM-11AM window for a 15% efficiency boost.")
+                if st.button("Generate Detailed AI Insights 🧠",use_container_width=True):
+                    if not AI_ENABLED:
+                        st.warning("AI insights need a configured GOOGLE_API_KEY.")
+                    else:
+                        metrics={"energy":st.session_state.stats_data.get("Energy",0),"focus":st.session_state.stats_data.get("Focus",0),"sleep":st.session_state.stats_data.get("Sleep",0),"stress":st.session_state.stats_data.get("Stress",0),"tasks_completed":sum([st.session_state.task_1,st.session_state.task_2,st.session_state.task_3]),"breathing_sessions":len(st.session_state.breathing_history)}
+                        with st.spinner("Analyzing your recorded data..."):
+                            insight=get_ai_response(f"Analyze these recorded student wellness metrics: {json.dumps(metrics)}. Give 3 practical non-medical observations and 2 realistic next steps. Never invent missing data. Keep it under 180 words.",history=[])
+                        st.info(insight.text if hasattr(insight,"text") else insight)
             with col_btn2:
-                if st.button("Download Raw Dataset 📥", use_container_width=True):
-                    st.success("Dataset exported to local machine as user_metrics_v2.csv")
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with tab2:
-        st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
-        col_main, col_side = st.columns([1.5, 1])
-        
-        with col_main:
-            st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 1.5rem; font-size: 1.8rem;">Core Identity Settings</h3>', unsafe_allow_html=True)
-            with st.form("identity_profile_form"):
-                f1, f2 = st.columns(2)
-                with f1:
-                    new_name = st.text_input("Alias / Name", value=st.session_state.user_data.get('name', ''))
-                    role = st.text_input("Primary Domain", value=st.session_state.user_data.get('major', 'Software Engineering'))
-                with f2:
-                    m_opt = ["🎯 Focused", "⚡ High Energy", "🌊 Flow State", "🧠 Deep Thinker", "🔥 Grind Mode"]
-                    c_mood_raw = st.session_state.user_data.get('mood', 'Focused')
-                    
-                    # Fuzzy match mood
-                    c_mood = "🎯 Focused"
-                    for opt in m_opt:
-                        if c_mood_raw in opt:
-                            c_mood = opt
-                            break
-                            
-                    s_mood = st.selectbox("Current Operational State", m_opt, index=m_opt.index(c_mood))
-                    st.markdown("<div style='height: 0.3rem;'></div>", unsafe_allow_html=True)
-                    uploaded_file = st.file_uploader("Update Avatar Lens", type=['png', 'jpg', 'jpeg'], label_visibility="collapsed")
-                
-                b = st.text_area("Prime Directive (Motto)", st.session_state.user_data.get('bio', ''), max_chars=200, placeholder="E.g., Master the fundamentals, build the future.")
-                
-                st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
-                if st.form_submit_button("Lock In Identity Preferences 🔐", use_container_width=True):
-                    if uploaded_file is not None:
-                        bytes_data = uploaded_file.getvalue()
-                        b64_img = base64.b64encode(bytes_data).decode()
-                        img_mime = uploaded_file.type
-                        st.session_state.user_data['profile_pic'] = f"data:{img_mime};base64,{b64_img}"
-                        
-                    clean_mood = s_mood.split(" ")[1] if " " in s_mood else s_mood
-                    st.session_state.user_data.update({'name': new_name, 'major': role, 'bio': b, 'mood': clean_mood})
-                    st.success("Identity vector updated successfully! 🌌")
-                    time.sleep(1)
-                    st.rerun()
-                    
-        with col_side:
-            st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 1.5rem; font-size: 1.8rem;">System Limits</h3>', unsafe_allow_html=True)
-            st.toggle("Aggressive Rest Alerts (Enforce breaks)", True)
-            st.toggle("Deep Work Mode (Block non-essential UI)", False)
-            st.toggle("Neuro-Acoustic Ambience", True)
-            
-            st.markdown("<br><hr style='opacity:0.1; border-color: white;'><br>", unsafe_allow_html=True)
-            st.markdown('<div class="wellness-card-stat" style="border: 1px solid #ef4444; background: rgba(239, 68, 68, 0.05);">', unsafe_allow_html=True)
-            st.markdown('<p style="color:#ef4444; font-weight:800; font-size:0.9rem;">DANGER ZONE</p>', unsafe_allow_html=True)
-            if st.button("Purge All Tracking Data", type="primary", use_container_width=True):
-                st.session_state.clear()
-                st.warning("All metrics incinerated. Rebooting...")
-                time.sleep(2)
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-    with tab3:
-        st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
-        st.markdown('<div class="phase-badge-premium" style="margin-bottom: 1rem; background: linear-gradient(90deg, #f97316, #fb7185); color: white; border:none;">AI FORECAST</div>', unsafe_allow_html=True)
-        st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 2rem; font-size: 2.2rem;">Future Probability Matrix</h3>', unsafe_allow_html=True)
-        
-        st.markdown("""
-        <p style="color: var(--text-muted); font-size: 1.1rem; line-height: 1.6; margin-bottom: 2rem;">
-            Based on your current improvement velocity and consistency streaks, the AI has extrapolated your skill acquisition timeline.
-        </p>
-        """, unsafe_allow_html=True)
-        
-        projections = [
-            ("Week 2", "Cognitive stamina increase by 12%", "High Probability", "#fb7185"),
-            ("Month 1", "Mastery of current focus domain fundamentals", "Very High Probability", "#fb923c"),
-            ("Month 3", "Top 5% efficiency rating in peer group", "Medium Probability", "#f59e0b"),
-            ("Year 1", "Expert tier pattern recognition and output", "Variable Probability", "#fb7185")
-        ]
-        
-        for time_frame, outcome, prob, color in projections:
-            st.markdown(f"""
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 1.5rem; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); border-radius: 16px; margin-bottom: 1rem; transition: all 0.3s ease;">
-                <div style="display: flex; align-items: center; gap: 1.5rem;">
-                    <div style="background: rgba(255,255,255,0.1); padding: 0.5rem 1rem; border-radius: 8px; font-weight: 800; font-family: 'Outfit', sans-serif; color: white; width: 100px; text-align: center;">
-                        {time_frame}
-                    </div>
-                    <div style="font-size: 1.1rem; color: #e2e8f0; font-weight: 500;">
-                        {outcome}
-                    </div>
-                </div>
-                <div style="color: {color}; font-weight: 700; font-size: 0.9rem; letter-spacing: 1px; text-transform: uppercase;">
-                    {prob}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
+                export_rows=[{"username":st.session_state.user_data.get("username",""),"name":st.session_state.user_data.get("name",""),"mood":st.session_state.user_data.get("mood",""),"energy":st.session_state.stats_data.get("Energy",0),"focus":st.session_state.stats_data.get("Focus",0),"sleep":st.session_state.stats_data.get("Sleep",0),"stress":st.session_state.stats_data.get("Stress",0),"tasks_completed":sum([st.session_state.task_1,st.session_state.task_2,st.session_state.task_3]),"breathing_sessions":len(st.session_state.breathing_history)}]
+                csv_bytes=pd.DataFrame(export_rows).to_csv(index=False).encode("utf-8")
+                st.download_button("Download Recorded Data 📥",data=csv_bytes,file_name="chillmind_metrics.csv",mime="text/csv",use_container_width=True)
 
 def page_notifications():
     """Notifications module - Refined with premium design."""
