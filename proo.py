@@ -3343,41 +3343,29 @@ def page_profile():
                     st.rerun()
                     
         with col_side:
-            st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 1.5rem; font-size: 1.8rem;">System Limits</h3>', unsafe_allow_html=True)
-            st.toggle("Aggressive Rest Alerts (Enforce breaks)", True)
-            st.toggle("Deep Work Mode (Block non-essential UI)", False)
-            st.toggle("Neuro-Acoustic Ambience", True)
-            
-            st.markdown("<br><hr style='opacity:0.1; border-color: white;'><br>", unsafe_allow_html=True)
-            st.markdown('<div class="wellness-card-stat" style="border: 1px solid #ef4444; background: rgba(239, 68, 68, 0.05);">', unsafe_allow_html=True)
-            st.markdown('<p style="color:#ef4444; font-weight:800; font-size:0.9rem;">DANGER ZONE</p>', unsafe_allow_html=True)
-            if st.button("Purge All Tracking Data", type="primary", use_container_width=True):
+            st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom:1.5rem;font-size:1.8rem;">System Limits</h3>',unsafe_allow_html=True)
+            st.session_state.rest_alerts=st.toggle("Aggressive Rest Alerts (Enforce breaks)",st.session_state.get("rest_alerts",True),key="rest_alerts_toggle")
+            st.session_state.deep_work_mode=st.toggle("Deep Work Mode (Block non-essential UI)",st.session_state.get("deep_work_mode",False),key="deep_work_toggle")
+            st.session_state.ambience_enabled=st.toggle("Neuro-Acoustic Ambience",st.session_state.get("ambience_enabled",True),key="ambience_toggle")
+            if st.button("Save system preferences",key="save_preferences",use_container_width=True):
+                persist_user_state()
+                st.success("Preferences saved.")
+            st.markdown("<br><hr style='opacity:.1;border-color:white;'><br>",unsafe_allow_html=True)
+            st.markdown('<div class="wellness-card-stat" style="border:1px solid #ef4444;background:rgba(239,68,68,.05);">',unsafe_allow_html=True)
+            st.markdown('<p style="color:#ef4444;font-weight:800;font-size:.9rem;">DANGER ZONE</p>',unsafe_allow_html=True)
+            if st.button("Purge All Tracking Data",type="primary",use_container_width=True):
+                username=st.session_state.get("authenticated_user")
+                if username:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        conn.execute("DELETE FROM users WHERE username=?",(username,))
+                        conn.commit()
                 st.session_state.clear()
-                st.warning("All metrics incinerated. Rebooting...")
-                time.sleep(2)
+                st.session_state.page="login"
+                st.session_state.authenticated_user=None
                 st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('</div>',unsafe_allow_html=True)
 
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-    with tab3:
-        st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
-        st.markdown('<div class="phase-badge-premium" style="margin-bottom: 1rem; background: linear-gradient(90deg, #a855f7, #ec4899); color: white; border:none;">AI FORECAST</div>', unsafe_allow_html=True)
-        st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 2rem; font-size: 2.2rem;">Consistency Signal</h3>', unsafe_allow_html=True)
-        
-        st.markdown("""
-        <p style="color: var(--text-muted); font-size: 1.1rem; line-height: 1.6; margin-bottom: 2rem;">
-            This summarizes the signals currently recorded in your account. It is not a prediction or medical assessment.
-        </p>
-        """, unsafe_allow_html=True)
-        
-        completed=sum([st.session_state.task_1,st.session_state.task_2,st.session_state.task_3])
-        focus=float(st.session_state.stats_data.get("Focus",0))
-        breathing=len(st.session_state.breathing_history)
-        consistency=round((completed/3*50)+(focus/10*30)+(min(breathing/10,1)*20))
-        st.markdown(f"""<div class="bloom-card" style="padding:1.5rem"><div style="font-size:.8rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px">Current consistency signal</div><div style="font-size:3rem;font-weight:900;color:var(--primary)">{consistency}%</div><p style="color:var(--text-muted);margin:0">A simple score from recorded tasks, focus check-in and breathing history. It is not a prediction of your future.</p></div>""",unsafe_allow_html=True)
-        for label,value in [("Tasks today",f"{completed}/3"),("Focus check-in",f"{focus:.0f}/10"),("Breathing sessions",str(breathing))]:
-            st.markdown(f"<div style='display:flex;justify-content:space-between;padding:1rem;background:rgba(255,255,255,.03);border:1px solid var(--glass-border);border-radius:14px;margin-bottom:.7rem'><span>{label}</span><strong>{value}</strong></div>",unsafe_allow_html=True)
+
 
         st.markdown('</div>', unsafe_allow_html=True)
 
