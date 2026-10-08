@@ -53,73 +53,122 @@ if not hasattr(st, "toggle"):
     st.toggle = _toggle
 
 # --- 1. CONFIGURATION ---
-YOUR_API_KEY = "AIzaSyBgDMfIun--n_ehfbrwAuPgxBK34toxZz4"
-GOOGLE_API_KEY = YOUR_API_KEY
+def get_secret(name, default=""):
+    try:
+        value=st.secrets.get(name,default)
+        if value: return str(value)
+    except Exception: pass
+    return os.getenv(name,default)
 
-# --- 2. SETUP API ---
-AI_ENABLED = bool(GOOGLE_API_KEY) and GENAI_AVAILABLE
+GOOGLE_API_KEY=get_secret("GOOGLE_API_KEY","")
+AI_ENABLED=bool(GOOGLE_API_KEY) and GENAI_AVAILABLE
+ACTIVE_AI_MODEL=get_secret("GEMINI_MODEL","gemini-1.5-flash")
+DB_PATH=get_secret("CHILLMIND_DB_PATH","chillmind.db")
 
-# Configure Gemini if available
-ACTIVE_AI_MODEL = 'gemini-1.5-flash'
+def hash_password(password,salt=None):
+    salt=salt or secrets.token_hex(16)
+    digest=hashlib.pbkdf2_hmac("sha256",password.encode(),salt.encode(),180000)
+    return salt,digest.hex()
+
+def verify_password(password,salt,password_hash):
+    _,candidate=hash_password(password,salt)
+    return hmac.compare_digest(candidate,password_hash)
+
+def init_database():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,salt TEXT NOT NULL,password_hash TEXT NOT NULL,
+            state_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)""")
+        conn.commit()
+
+def _json_default(value):
+    if isinstance(value,datetime): return value.isoformat()
+    if isinstance(value,set): return list(value)
+    return str(value)
+
+def collect_persistent_state():
+    breathing=[]
+    for item in st.session_state.get("breathing_history",[]):
+        item=dict(item)
+        if isinstance(item.get("timestamp"),datetime): item["timestamp"]=item["timestamp"].isoformat()
+        breathing.append(item)
+    return {
+        "user_data":st.session_state.get("user_data",{}),
+        "chat_history":st.session_state.get("chat_history",[])[-100:],
+        "schedule_items":st.session_state.get("schedule_items",[]),
+        "notifications":st.session_state.get("notifications",[])[-200:],
+        "stats_data":st.session_state.get("stats_data",{}),
+        "breathing_history":breathing[-200:],"breathing_streak":st.session_state.get("breathing_streak",0),
+        "daily_goals":st.session_state.get("daily_goals",{}),"notif_preferences":st.session_state.get("notif_preferences",{}),
+        "task_1":st.session_state.get("task_1",False),"task_2":st.session_state.get("task_2",False),"task_3":st.session_state.get("task_3",False),
+        "tic_scores":st.session_state.get("tic_scores",{"X":0,"O":0}),"tic_games_played":st.session_state.get("tic_games_played",0),
+        "jumble_score":st.session_state.get("jumble_score",0),"jumble_streak":st.session_state.get("jumble_streak",0),
+        "memory_score":st.session_state.get("memory_score",0),"memory_level":st.session_state.get("memory_level",1),
+        "word_score":st.session_state.get("word_score",0),"word_streak":st.session_state.get("word_streak",0),
+        "focus_score":st.session_state.get("focus_score",0),"focus_high_score":st.session_state.get("focus_high_score",0),
+        "focus_total_played":st.session_state.get("focus_total_played",0),"focus_total_correct":st.session_state.get("focus_total_correct",0),
+        "rest_alerts":st.session_state.get("rest_alerts",True),"deep_work_mode":st.session_state.get("deep_work_mode",False),
+        "ambience_enabled":st.session_state.get("ambience_enabled",True)
+    }
+
+def restore_persistent_state(state):
+    for key,value in (state or {}).items():
+        if key=="breathing_history":
+            restored=[]
+            for item in value or []:
+                item=dict(item)
+                try: item["timestamp"]=datetime.fromisoformat(item["timestamp"])
+                except Exception: item["timestamp"]=datetime.now()
+                restored.append(item)
+            st.session_state.breathing_history=restored
+        else: st.session_state[key]=value
+
+def persist_user_state():
+    username=st.session_state.get("authenticated_user")
+    if not username: return
+    try:
+        state_json=json.dumps(collect_persistent_state(),default=_json_default)
+        now=datetime.now().isoformat(timespec="seconds")
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("UPDATE users SET state_json=?,updated_at=? WHERE username=?",(state_json,now,username)); conn.commit()
+    except Exception as exc: print(f"State persistence error: {exc}")
+
+def create_user(username,password):
+    username=username.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}",username): return False,"Use 3–32 letters, numbers, dots, underscores, or hyphens for the username."
+    if len(password)<8: return False,"Password must be at least 8 characters."
+    salt,password_hash=hash_password(password); now=datetime.now().isoformat(timespec="seconds")
+    state=collect_persistent_state(); state["user_data"]["username"]=username; state["user_data"]["name"]=username
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("INSERT INTO users(username,salt,password_hash,state_json,created_at,updated_at) VALUES(?,?,?,?,?,?)",(username,salt,password_hash,json.dumps(state,default=_json_default),now,now)); conn.commit()
+        return True,"Account created."
+    except sqlite3.IntegrityError: return False,"That username already exists. Please log in instead."
+    except Exception as exc: print(f"Account creation error: {exc}"); return False,"Could not create the account right now."
+
+def authenticate_user(username,password):
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row=conn.execute("SELECT salt,password_hash,state_json FROM users WHERE username=?",(username.strip(),)).fetchone()
+        if not row or not verify_password(password,row[0],row[1]): return False
+        st.session_state.authenticated_user=username.strip(); restore_persistent_state(json.loads(row[2]))
+        st.session_state.user_data["username"]=username.strip()
+        return True
+    except Exception as exc: print(f"Authentication error: {exc}"); return False
+
+init_database()
 if AI_ENABLED:
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        
-        # Adaptive Model Selection (Finds the best available model for your key)
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        if 'models/gemini-1.5-flash' in available_models:
-            ACTIVE_AI_MODEL = 'gemini-1.5-flash'
-        elif 'models/gemini-1.5-pro' in available_models:
-            ACTIVE_AI_MODEL = 'gemini-1.5-pro'
-        elif 'models/gemini-pro' in available_models:
-            ACTIVE_AI_MODEL = 'gemini-pro'
-            
-    except Exception as e:
-        AI_ENABLED = False
-        print(f"Model fetch error: {e}")
+        available_models=[m.name for m in genai.list_models() if "generateContent" in m.supported_generation_methods]
+        for candidate in [ACTIVE_AI_MODEL,"gemini-1.5-flash","gemini-1.5-pro","gemini-pro"]:
+            normalized=candidate if candidate.startswith("models/") else f"models/{candidate}"
+            if normalized in available_models:
+                ACTIVE_AI_MODEL=normalized.replace("models/","",1); break
+    except Exception as exc: AI_ENABLED=False; print(f"AI configuration error: {exc}")
 
 def get_active_model_name():
-    """Get the active AI model name if AI is enabled."""
-    if AI_ENABLED:
-        return ACTIVE_AI_MODEL
-    return None
-
-def get_ai_response(prompt_text, history=None, image=None, stream=False):
-    """Adaptive, Real AI response bypassing local echo loops."""
-    
-    # 1. Check if the AI engine is ready and active
-    if AI_ENABLED and hasattr(st.session_state, 'chat_session') and st.session_state.chat_session:
-        try:
-            # 2. Build the Persona context seamlessly
-            full_prompt = f"""You are ChillMind, a supportive AI mentor for students. 
-Respond directly to the student naturally and concisely.
-Student: {prompt_text}"""
-            
-            # 3. Stream or return the real AI response
-            if stream:
-                response = st.session_state.chat_session.send_message(full_prompt, stream=True)
-                return response
-            else:
-                response = st.session_state.chat_session.send_message(full_prompt)
-                return response.text
-                
-        except Exception as e:
-            # Fallback only if Google's API crashes or limits are hit, showing the real error
-            error_msg = f"System recalibrating... [API Error: {e}]"
-            if stream:
-                class MockChunk:
-                    def __init__(self, text): self.text = text
-                return [MockChunk(error_msg)]
-            return error_msg
-    
-    # 4. If AI_ENABLED is False, show a clear connection error instead of echoing
-    fallback_text = "Neural link offline. Please check your API key connection."
-    if stream:
-        class MockChunk:
-            def __init__(self, text): self.text = text
-        return [MockChunk(fallback_text)]
-    return fallback_text
+    return ACTIVE_AI_MODEL if AI_ENABLED else None
 
 # --- 2.1 LOCAL INTELLIGENCE DATA ---
 try:
@@ -169,10 +218,18 @@ def get_intent_response(text):
 
 st.set_page_config(page_title="ChillMind - Pro Student", page_icon="🎓", layout="wide", initial_sidebar_state="expanded")
 
+if not getattr(st.rerun,"_chillmind_wrapped",False):
+    _original_rerun=st.rerun
+    def _persisting_rerun(*args,**kwargs):
+        persist_user_state(); return _original_rerun(*args,**kwargs)
+    _persisting_rerun._chillmind_wrapped=True
+    st.rerun=_persisting_rerun
+
 # --- 3. SESSION STATE INITIALIZATION ---
 if 'page' not in st.session_state: st.session_state.page = 'login'
+if 'authenticated_user' not in st.session_state: st.session_state.authenticated_user = None
 if 'current_view' not in st.session_state: st.session_state.current_view = 'Dashboard'
-if 'user_data' not in st.session_state: st.session_state.user_data = {'username': 'User', 'name': 'User', 'age': 25, 'mood': 'Happy', 'join_date': datetime.now().strftime("%B %Y"), 'profile_pic': None, 'bio': '', 'streak': 0, 'goals': ''}
+if 'user_data' not in st.session_state: st.session_state.user_data = {'username': 'User', 'name': 'User', 'age': None, 'mood': 'Happy', 'join_date': datetime.now().strftime("%B %Y"), 'profile_pic': None, 'bio': '', 'streak': 0, 'goals': ''}
 if 'chat_history' not in st.session_state: st.session_state.chat_history = []
 if 'active_game' not in st.session_state: st.session_state.active_game = None
 if 'active_calendar_view' not in st.session_state: st.session_state.active_calendar_view = None
@@ -303,19 +360,19 @@ st.markdown(f"""
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
     :root {{
-        --primary: #818cf8;
-        --primary-glow: rgba(129, 140, 248, 0.4);
-        --secondary: #34d399;
-        --secondary-glow: rgba(52, 211, 153, 0.3);
-        --accent: #a78bfa;
-        --error: #6366f1;
-        --bg-dark: #0f172a;
+        --primary: #f59e0b;
+        --primary-glow: rgba(245, 158, 11, 0.4);
+        --secondary: #fb7185;
+        --secondary-glow: rgba(251, 113, 133, 0.3);
+        --accent: #f97316;
+        --error: #ea580c;
+        --bg-dark: #17120f;
         --card-bg: rgba(30, 41, 59, 0.4);
         --glass-border: rgba(255, 255, 255, 0.08);
         --glass-border-bright: rgba(255, 255, 255, 0.15);
         --text-main: #f8fafc;
-        --text-muted: #94a3b8;
-        --sidebar-bg: #0f172a;
+        --text-muted: #c4b5a5;
+        --sidebar-bg: #17120f;
         --transition-soft: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
         --3d-shadow: 0 50px 100px -20px rgba(0, 0, 0, 0.5);
     }}
@@ -333,7 +390,7 @@ st.markdown(f"""
     }}
 
     .stApp {{
-        background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #312e81 100%) !important;
+        background: linear-gradient(135deg, #17120f 0%, #2a1b14 50%, #3b2417 100%) !important;
         background-attachment: fixed !important;
         color: var(--text-main);
         overflow-x: hidden;
@@ -345,7 +402,7 @@ st.markdown(f"""
         position: fixed;
         top: -20%; left: -20%;
         width: 80%; height: 80%;
-        background: radial-gradient(circle, rgba(129, 140, 248, 0.08) 0%, transparent 70%);
+        background: radial-gradient(circle, rgba(245, 158, 11, 0.08) 0%, transparent 70%);
         z-index: -1;
         animation: float-bg 30s infinite alternate ease-in-out;
     }}
@@ -355,7 +412,7 @@ st.markdown(f"""
         position: fixed;
         bottom: -20%; right: -20%;
         width: 80%; height: 80%;
-        background: radial-gradient(circle, rgba(52, 211, 153, 0.05) 0%, transparent 70%);
+        background: radial-gradient(circle, rgba(251, 113, 133, 0.05) 0%, transparent 70%);
         z-index: -1;
         animation: float-bg 40s infinite alternate-reverse ease-in-out;
     }}
@@ -373,9 +430,9 @@ st.markdown(f"""
 
     /* Ultimate CSS Reset for Error Tones */
     div[data-testid="stAlert"] {{
-        background-color: rgba(129, 140, 248, 0.1) !important;
+        background-color: rgba(245, 158, 11, 0.1) !important;
         color: #f1f5f9 !important;
-        border: 1px solid rgba(129, 140, 248, 0.2) !important;
+        border: 1px solid rgba(245, 158, 11, 0.2) !important;
         border-radius: 12px !important;
     }}
     div[data-testid="stAlert"] svg {{
@@ -442,7 +499,7 @@ st.markdown(f"""
     .glass-card:hover, .preference-card:hover, .achievement-card:hover {{
         border-color: var(--glass-border-bright);
         transform: translateY(-5px);
-        box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.6), 0 0 20px rgba(129, 140, 248, 0.1);
+        box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.6), 0 0 20px rgba(245, 158, 11, 0.1);
     }}
 
     /* Refined Specular Reflection */
@@ -462,7 +519,7 @@ st.markdown(f"""
     /* Dashboard & Stat Cards */
     .stat-card-premium {{
         text-align: center;
-        background: linear-gradient(135deg, rgba(30, 41, 59, 0.5), rgba(15, 23, 42, 0.7));
+        background: linear-gradient(135deg, rgba(30, 41, 59, 0.5), rgba(23, 18, 15, 0.7));
         padding: 1.8rem;
         border-radius: 36px;
         border: 1px solid var(--glass-border);
@@ -478,7 +535,7 @@ st.markdown(f"""
         font-size: 3rem;
         font-weight: 800;
         margin: 0.5rem 0;
-        background: linear-gradient(135deg, #fff 30%, #94a3b8 100%);
+        background: linear-gradient(135deg, #fff 30%, #c4b5a5 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
     }}
@@ -515,8 +572,8 @@ st.markdown(f"""
 
     /* Breathing & Tip specific */
     .breathing-tip {{
-        background: rgba(129, 140, 248, 0.1);
-        border: 1px solid rgba(129, 140, 248, 0.2);
+        background: rgba(245, 158, 11, 0.1);
+        border: 1px solid rgba(245, 158, 11, 0.2);
         padding: 1rem 1.5rem;
         border-radius: 16px;
         margin: 1.5rem 0;
@@ -552,20 +609,20 @@ st.markdown(f"""
 
     /* Header & Badge Styling */
     .welcome-badge {{
-        background: rgba(129, 140, 248, 0.15);
+        background: rgba(245, 158, 11, 0.15);
         padding: 0.5rem 1.2rem;
         border-radius: 100px;
         font-size: 0.85rem;
         font-weight: 600;
         color: var(--primary);
-        border: 1px solid rgba(129, 140, 248, 0.2);
+        border: 1px solid rgba(245, 158, 11, 0.2);
         display: inline-block;
         margin-bottom: 1rem;
     }}
 
     .card-icon-wrapper {{
         width: 44px; height: 44px;
-        background: linear-gradient(135deg, var(--primary), #4f46e5);
+        background: linear-gradient(135deg, var(--primary), #c2410c);
         border-radius: 12px;
         display: flex; align-items: center; justify-content: center;
         font-size: 1.4rem; color: white;
@@ -631,7 +688,7 @@ st.markdown(f"""
         justify-content: center;
     }}
     .action-card-mini:hover {{
-        background: rgba(129, 140, 248, 0.1);
+        background: rgba(245, 158, 11, 0.1);
         border-color: var(--primary);
         transform: translateY(-8px) scale(1.02);
         box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), 0 0 15px var(--primary-glow);
@@ -756,7 +813,7 @@ st.markdown(f"""
 
     /* Inputs and Forms (Dark Theme Text Visibility Fix) */
     input, textarea, select {{
-        background: rgba(15, 23, 42, 0.4) !important;
+        background: rgba(23, 18, 15, 0.4) !important;
         border: 1px solid var(--glass-border) !important;
         border-radius: 10px !important;
         color: #f8fafc !important;
@@ -768,7 +825,7 @@ st.markdown(f"""
     }}
     
     ul[data-testid="stSelectboxVirtualDropdown"] {{
-        background-color: #0f172a !important;
+        background-color: #17120f !important;
     }}
     
     ul[data-testid="stSelectboxVirtualDropdown"] li {{
@@ -818,7 +875,7 @@ st.markdown(f"""
     .task-icon-mini {{
         width: 40px; height: 40px;
         display: flex; align-items: center; justify-content: center;
-        background: rgba(129, 140, 248, 0.1);
+        background: rgba(245, 158, 11, 0.1);
         border-radius: 12px;
         font-size: 1.2rem;
     }}
@@ -845,7 +902,7 @@ st.markdown(f"""
         transition: var(--transition-soft);
     }}
     .header-btn:hover {{
-        background: rgba(129, 140, 248, 0.2) !important;
+        background: rgba(245, 158, 11, 0.2) !important;
         transform: scale(1.05);
     }}
 
@@ -860,7 +917,7 @@ st.markdown(f"""
 
     /* Bloom UI Extensions */
     .bloom-card {{
-        background: rgba(15, 23, 42, 0.8) !important;
+        background: rgba(23, 18, 15, 0.8) !important;
         backdrop-filter: blur(40px) saturate(200%) !important;
         -webkit-backdrop-filter: blur(40px) saturate(200%) !important;
         border: 1px solid rgba(255, 255, 255, 0.1) !important;
@@ -923,13 +980,13 @@ st.markdown(f"""
     }}
     .stTabs [aria-selected="true"] {{
         background-color: rgba(99, 102, 241, 0.2) !important;
-        border-color: #6366f1 !important;
-        color: #818cf8 !important;
+        border-color: #ea580c !important;
+        color: #f59e0b !important;
     }}
 
     /* Fixed Premium Sidebar */
     [data-testid="stSidebar"], [data-testid="stSidebarUserContent"], [data-testid="stSidebarNav"] {{
-        background: #0f172a !important;
+        background: #17120f !important;
         border-right: none !important;
         overflow-x: hidden !important;
     }}
@@ -941,7 +998,7 @@ st.markdown(f"""
     
     /* Style for native collapse button */
     [data-testid="stSidebarCollapseButton"] button {{
-        background-color: rgba(129, 140, 248, 0.1) !important;
+        background-color: rgba(245, 158, 11, 0.1) !important;
         color: var(--primary) !important;
         border: 1px solid var(--glass-border) !important;
         border-radius: 14px !important;
@@ -966,7 +1023,7 @@ st.markdown(f"""
         font-size: 0.95rem !important;
         padding: 0.8rem 1rem !important;
         margin-bottom: 0.2rem !important;
-        color: #94a3b8 !important;
+        color: #c4b5a5 !important;
     }}
     
     [data-testid="stSidebar"] .stButton > button:hover {{
@@ -989,7 +1046,7 @@ st.markdown(f"""
         font-weight: 800;
         font-size: 1.2rem;
         color: #ffffff;
-        background: #6366f1;
+        background: #ea580c;
         width: 32px; height: 32px;
         display: flex; align-items: center; justify-content: center;
         border-radius: 10px;
@@ -1020,7 +1077,7 @@ st.markdown(f"""
     
     .profile-avatar-mini {{
         width: 36px; height: 36px;
-        background: linear-gradient(135deg, #6366f1, #a855f7);
+        background: linear-gradient(135deg, #ea580c, #f97316);
         border-radius: 50%;
         display: flex; align-items: center; justify-content: center;
         font-weight: 800; font-size: 0.8rem; color: white;
@@ -1033,7 +1090,7 @@ st.markdown(f"""
         font-size: 0.85rem; font-weight: 600; color: white;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }}
-    .profile-status-mini {{ font-size: 0.7rem; color: #10b981; font-weight: 700; letter-spacing: 0.5px; }}
+    .profile-status-mini {{ font-size: 0.7rem; color: #f59e0b; font-weight: 700; letter-spacing: 0.5px; }}
 
     .sidebar-divider {{
         height: 1px;
@@ -1059,11 +1116,11 @@ st.markdown(f"""
     .breathing-circle {{
         width: 250px; height: 250px;
         margin: 2rem auto;
-        background: conic-gradient(from 0deg, #818cf8, #34d399, #818cf8);
+        background: conic-gradient(from 0deg, #f59e0b, #fb7185, #f59e0b);
         border-radius: 50%;
         display: flex; align-items: center; justify-content: center;
         animation: rotate 20s linear infinite;
-        box-shadow: 0 0 50px rgba(129, 140, 248, 0.3);
+        box-shadow: 0 0 50px rgba(245, 158, 11, 0.3);
         position: relative;
     }}
     .breathing-circle::before {{
@@ -1088,9 +1145,9 @@ st.markdown(f"""
         border: 1px solid var(--glass-border);
         transition: all 0.5s ease;
     }}
-    .phase-inhale {{ color: #34d399; border-color: #34d39966; box-shadow: 0 0 30px #34d39922; }}
+    .phase-inhale {{ color: #fb7185; border-color: #fb718566; box-shadow: 0 0 30px #fb718522; }}
     .phase-hold {{ color: #fbbf24; border-color: #fbbf2466; box-shadow: 0 0 30px #fbbf2422; }}
-    .phase-exhale {{ color: #818cf8; border-color: #818cf866; box-shadow: 0 0 30px #818cf822; }}
+    .phase-exhale {{ color: #f59e0b; border-color: #f59e0b66; box-shadow: 0 0 30px #f59e0b22; }}
     
     .breathing-timer {{
         font-size: 4rem; font-weight: 900;
@@ -1142,7 +1199,7 @@ st.markdown(f"""
         border-color: var(--primary);
     }}
     .mood-orb-active {{
-        background: linear-gradient(135deg, var(--primary), #4f46e5) !important;
+        background: linear-gradient(135deg, var(--primary), #c2410c) !important;
         box-shadow: 0 0 40px var(--primary-glow);
         border-color: white !important;
         transform: scale(1.15);
@@ -1183,7 +1240,7 @@ st.markdown(f"""
         padding: 0 !important;
         display: flex !important; align-items: center !important; justify-content: center !important;
         font-size: 1.8rem !important;
-        background: linear-gradient(135deg, var(--primary), #4f46e5) !important;
+        background: linear-gradient(135deg, var(--primary), #c2410c) !important;
         border: none !important;
         box-shadow: 0 8px 20px var(--primary-glow) !important;
         margin: 0 auto !important;
@@ -1528,15 +1585,13 @@ def check_upcoming_tasks():
             if 25 <= time_diff <= 35:  # Within 30 minutes range
                 add_notification(f"Upcoming: {item['icon']} {item['activity']} at {item['time']}", "upcoming", "⏰")
 
-def add_schedule_item(time, activity, icon, date):
-    st.session_state.schedule_items.append({
-        "time": time,
-        "activity": activity,
-        "icon": icon,
-        "completed": False,
-        "date": date
-    })
-    add_notification(f"New: {icon} {activity} scheduled at {time}", "upcoming", "📅")
+def add_schedule_item(time,activity,icon,date):
+    time=time.strip(); activity=activity.strip()
+    if not re.fullmatch(r"(?:[01]\\d|2[0-3]):[0-5]\\d",time): raise ValueError("Time must use HH:MM format.")
+    if not activity: raise ValueError("Activity cannot be empty.")
+    next_id=max([int(item.get("id",0)) for item in st.session_state.schedule_items] or [0])+1
+    st.session_state.schedule_items.append({"id":next_id,"time":time,"activity":activity,"icon":icon,"completed":False,"date":date})
+    add_notification(f"New: {icon} {activity} scheduled at {time}","upcoming","📅")
 
 def render_game_stats():
     """Renders Arcade performance metrics with premium Bloom design."""
@@ -1551,7 +1606,7 @@ def render_game_stats():
         ("⚔️", st.session_state.tic_scores.get('X', 0), "Tic Wins", "var(--primary)"),
         ("📝", st.session_state.jumble_score, "Jumble", "var(--secondary)"),
         ("🔍", st.session_state.memory_score, "Memory", "var(--accent)"),
-        ("🧠", st.session_state.focus_score, "Focus", "#818cf8"),
+        ("🧠", st.session_state.focus_score, "Focus", "#f59e0b"),
         ("🗣️", st.session_state.word_score, "Flow", "#60a5fa")
     ]
     
@@ -1638,17 +1693,17 @@ def render_sidebar():
         # Show AI status if enabled
         if AI_ENABLED:
             st.markdown(f"""
-            <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 20px; padding: 5px 10px; margin-bottom: 15px; text-align: center;">
-                <span style="color: #10b981; font-size: 0.7rem; font-weight: 600;">🤖 AI MENTOR • ONLINE</span>
+            <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid #f59e0b; border-radius: 20px; padding: 5px 10px; margin-bottom: 15px; text-align: center;">
+                <span style="color: #f59e0b; font-size: 0.7rem; font-weight: 600;">🤖 AI MENTOR • ONLINE</span>
             </div>
             """, unsafe_allow_html=True)
         
         st.markdown("""
         <style>
         @keyframes cyber-brand-glow {
-            0% { text-shadow: 0 0 5px rgba(129, 140, 248, 0.2); transform: scale(1); filter: hue-rotate(0deg); }
-            50% { text-shadow: 0 0 20px rgba(129, 140, 248, 0.8), 0 0 30px rgba(52, 211, 153, 0.4); transform: scale(1.04); filter: hue-rotate(15deg); }
-            100% { text-shadow: 0 0 5px rgba(129, 140, 248, 0.2); transform: scale(1); filter: hue-rotate(0deg); }
+            0% { text-shadow: 0 0 5px rgba(245, 158, 11, 0.2); transform: scale(1); filter: hue-rotate(0deg); }
+            50% { text-shadow: 0 0 20px rgba(245, 158, 11, 0.8), 0 0 30px rgba(251, 113, 133, 0.4); transform: scale(1.04); filter: hue-rotate(15deg); }
+            100% { text-shadow: 0 0 5px rgba(245, 158, 11, 0.2); transform: scale(1); filter: hue-rotate(0deg); }
         }
         .animated-Chillmind-brand {
             font-family: 'Outfit', sans-serif;
@@ -1713,13 +1768,13 @@ def render_sidebar():
             st.rerun()
 
 # --- BLOOM UI HELPERS ---
-def render_bloom_background(theme_color="#818cf8"):
+def render_bloom_background(theme_color="#f59e0b"):
     """Applies the immersive bloom background globally to the current view."""
     st.markdown(f"""
-    <div class="login-bg-immersive" style="background: radial-gradient(circle at 50% 50%, #1e1b4b 0%, #0f172a 100%);"></div>
+    <div class="login-bg-immersive" style="background: radial-gradient(circle at 50% 50%, #2a1b14 0%, #17120f 100%);"></div>
     <div style="position:fixed; top:0; left:0; width:100%; height:100%; z-index:-1; overflow:hidden; opacity:0.3;">
         <div style="position:absolute; top:-10%; left:-10%; width:60%; height:60%; background:radial-gradient(circle, {theme_color} 0%, transparent 70%); filter:blur(100px); animation: bloomMove 25s infinite alternate;"></div>
-        <div style="position:absolute; bottom:-10%; right:-10%; width:60%; height:60%; background:radial-gradient(circle, #4f46e5 0%, transparent 70%); filter:blur(100px); animation: bloomMove 30s infinite alternate-reverse;"></div>
+        <div style="position:absolute; bottom:-10%; right:-10%; width:60%; height:60%; background:radial-gradient(circle, #c2410c 0%, transparent 70%); filter:blur(100px); animation: bloomMove 30s infinite alternate-reverse;"></div>
     </div>
     <style>
         @keyframes bloomMove {{
@@ -1740,14 +1795,14 @@ def load_lottieurl(url: str):
     except:
         return None
 
-def render_ai_module_analyzer(module_name: str, context_data: dict, bg_color: str = "rgba(168, 85, 247, 0.05)"):
+def render_ai_module_analyzer(module_name: str, context_data: dict, bg_color: str = "rgba(249, 115, 22, 0.05)"):
     if not globals().get('AI_ENABLED', False) or 'gemini_model' not in st.session_state or st.session_state.gemini_model is None:
         return
         
     st.markdown(f'''
-    <div class="bloom-card" style="padding: 1.5rem; margin-bottom: 2rem; background: {bg_color}; border: 1px solid rgba(168, 85, 247, 0.2); box-shadow: 0 10px 30px rgba(168, 85, 247, 0.1);">
+    <div class="bloom-card" style="padding: 1.5rem; margin-bottom: 2rem; background: {bg_color}; border: 1px solid rgba(249, 115, 22, 0.2); box-shadow: 0 10px 30px rgba(249, 115, 22, 0.1);">
         <div class="card-header-premium" style="margin-bottom: 1rem; border: none; padding-bottom: 0;">
-            <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #a855f7, #ec4899);">🧠</div>
+            <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #f97316, #fb7185);">🧠</div>
             <div>
                 <h3 style="margin:0; font-size: 1.4rem;">AI Neural Analysis</h3>
                 <p style="margin:0; font-size: 0.8rem; color: var(--text-muted);">Synthesize insights for {module_name}</p>
@@ -1762,7 +1817,7 @@ def render_ai_module_analyzer(module_name: str, context_data: dict, bg_color: st
                 prompt = f"You are the 'Chillmind AI', an advanced cyberpunk/zen neural assistant. Analyze this user data for the '{module_name}' module. Keep it extremely brief (2-3 sentences max) and provide ONE specific, actionable piece of advice. Data: {context_str}"
                 response = st.session_state.gemini_model.generate_content(prompt)
                 st.markdown(f'''
-                <div style="background: rgba(0,0,0,0.3); padding: 1.5rem; border-radius: 16px; border-left: 4px solid #a855f7; margin-top: 1rem;">
+                <div style="background: rgba(0,0,0,0.3); padding: 1.5rem; border-radius: 16px; border-left: 4px solid #f97316; margin-top: 1rem;">
                     <p style="color: white; font-size: 1.05rem; line-height: 1.6; margin: 0; font-family: 'Inter', sans-serif;">{response.text}</p>
                 </div>
                 ''', unsafe_allow_html=True)
@@ -1771,146 +1826,34 @@ def render_ai_module_analyzer(module_name: str, context_data: dict, bg_color: st
     st.markdown('</div>', unsafe_allow_html=True)
 
 def page_login():
-    """Refined Login Portal - Clean, centered, and premium."""
-    main_zen = load_lottieurl("https://lottie.host/8086027c-02cf-46c5-9c98-132b8fa58025/vNlHOnP25P.json")
-    
-    render_bloom_background(theme_color="#818cf8")
-    
-    # Custom styles to force a central card-like appearance for the main block
-    st.markdown("""
-    <style>
-        /* Center the entire block-container on the login page */
-        .block-container {
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh !important;
-            padding-top: 0 !important;
-        }
-        
-        .social-btn {
-            width: 44px; height: 44px; border-radius: 50%;
-            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1.1rem; cursor: pointer; transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-        }
-        .social-btn:hover {
-            box-shadow: 0 10px 20px -5px rgba(129, 140, 248, 0.4);
-        }
-        
-        /* Fixed Bottom-Left Theme Toggle */
-        .snow-btn-container {{
-            position: fixed;
-            bottom: 30px;
-            left: 30px;
-            z-index: 10000;
-            background: rgba(15, 23, 42, 0.5);
-            backdrop-filter: blur(10px);
-            padding: 4px 12px;
-            border-radius: 100px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            transition: all 0.3s ease;
-        }}
-        .snow-btn-container:hover {{
-            background: rgba(15, 23, 42, 0.8);
-            border-color: #818cf8;
-        }}
-    </style>
-    """, unsafe_allow_html=True)
-
-    # Bottom-left corner theme toggle - refined
-    st.markdown(f"""
-        <style>
-        .snow-btn-minimal {{
-            position: fixed;
-            bottom: 25px;
-            left: 25px;
-            z-index: 10000;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            color: #94a3b8;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 0.75rem;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }}
-        .snow-btn-minimal:hover {{
-            background: rgba(255, 255, 255, 0.08);
-            color: white;
-            border-color: #818cf8;
-        }}
-        </style>
-    """, unsafe_allow_html=True)
-
-    # Use a narrow column to contain the 'card' content
-    _, col, _ = st.columns([1, 1.8, 1])
-    
+    main_zen=load_lottieurl("https://lottie.host/8086027c-02cf-46c5-9c98-132b8fa58025/vNlHOnP25P.json")
+    render_bloom_background(theme_color="#f59e0b")
+    st.markdown("""<style>.block-container{display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:100vh!important;padding-top:0!important}.auth-note{color:#c4b5a5;font-size:.82rem;text-align:center;margin-top:.75rem}</style>""",unsafe_allow_html=True)
+    _,col,_=st.columns([1,1.8,1])
     with col:
-        st.markdown('<div class="bloom-card" style="padding: 3.5rem;">', unsafe_allow_html=True)
-        
-        if main_zen:
-            st_lottie(main_zen, height=280, key="login_anim_final")
-        
-        st.markdown("""
-            <div style="text-align: center; margin-bottom: 3rem;">
-                <div class="phase-badge-premium" style="letter-spacing: 4px;">STUDENT ACCESS</div>
-                <h1 class="bloom-title-gradient" style="font-size: 4.5rem; margin: 0.5rem 0 0; line-height: 1;">Chillmind</h1>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Inputs
-        user = st.text_input("username", key="login_user", placeholder="Enter your identity...")
-        pw = st.text_input("password", type="password", key="login_pw", placeholder="••••••••")
-        
-        # Options row
-        opt_c1, opt_c2 = st.columns([1, 1])
-        with opt_c1:
-            st.checkbox("Persistent Sync", value=True)
-        with opt_c2:
-            st.markdown('<p style="text-align:right; font-size:0.85rem; margin-top:8px; color:#818cf8; cursor:pointer; font-weight:600;">Forgot Secret?</p>', unsafe_allow_html=True)
-        
-        st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-        
-        if st.button("Log in ⚡", type="primary", use_container_width=True):
-            if user and pw:
-                with st.status("Verifying biometric hash...", expanded=False) as status:
-                    time.sleep(1.2)
-                    status.update(label="Access Granted", state="complete")
-                st.session_state.user_data['username'] = user
-                st.session_state.page = 'survey'
-                st.rerun()
-            elif not user:
-                st.error("Identity required.")
-            else:
-                st.error("Certificate required.")
-
-        # Footer Links
-        st.markdown("""
-            <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: #64748b; margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 2rem;">
-                <span>New seeker? <b style="color:#818cf8">Register</b></span>
-                <span>Systems: <span style="color:#10b981; font-weight:700;">ONLINE</span></span>
-            </div>
-        """, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # Show snow toggle at bottom left separately to avoid container logic
-    st.markdown(f"""
-        <div style="position:fixed; bottom:25px; left:25px; z-index:9999;">
-    """, unsafe_allow_html=True)
-    if st.button("❄️ Aura", key="snow_toggle_aura"):
-        st.session_state.snow_theme = True
-        st.session_state.snow_start_time = time.time()
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # Global Footer
-    st.markdown("""
-    <div style="position: fixed; bottom: 20px; left: 0; right: 0; text-align: center; opacity: 0.3; font-size: 10px; letter-spacing: 2px;">
-        NODE-ENCRYPTED WELLNESS SECTOR • © 2026
-    </div>
-    """, unsafe_allow_html=True)
+        st.markdown('<div class="bloom-card" style="padding:3.5rem;">',unsafe_allow_html=True)
+        if main_zen: st_lottie(main_zen,height=240,key="login_anim_final")
+        st.markdown("""<div style="text-align:center;margin-bottom:2rem"><div class="phase-badge-premium">STUDENT ACCESS</div><h1 class="bloom-title-gradient" style="font-size:4.5rem;margin:.5rem 0">Chillmind</h1><p style="color:#c4b5a5">A calm workspace for study, wellness and focus.</p></div>""",unsafe_allow_html=True)
+        mode=st.radio("Account mode",["Log in","Create account"],horizontal=True,label_visibility="collapsed")
+        user=st.text_input("Username",key="login_user",placeholder="Enter your username")
+        pw=st.text_input("Password",type="password",key="login_pw",placeholder="At least 8 characters")
+        if mode=="Create account":
+            confirm=st.text_input("Confirm password",type="password",key="login_pw_confirm",placeholder="Repeat your password")
+            if st.button("Create account 🌱",type="primary",use_container_width=True):
+                if pw!=confirm: st.error("Passwords do not match.")
+                else:
+                    ok,msg=create_user(user,pw)
+                    if ok: authenticate_user(user,pw); st.session_state.page="survey"; st.rerun()
+                    else: st.error(msg)
+        else:
+            if st.button("Log in ⚡",type="primary",use_container_width=True):
+                if not user or not pw: st.error("Username and password are required.")
+                elif authenticate_user(user,pw):
+                    st.session_state.page="survey" if not st.session_state.user_data.get("onboarded") else "main"; st.session_state.current_view="Dashboard"; st.rerun()
+                else: st.error("Incorrect username or password.")
+        st.markdown('<div class="auth-note">Account data is stored locally in the app database. AI activates only when GOOGLE_API_KEY is configured.</div>',unsafe_allow_html=True)
+        st.markdown('</div>',unsafe_allow_html=True)
+    st.markdown("""<div style="position:fixed;bottom:20px;left:0;right:0;text-align:center;opacity:.3;font-size:10px;letter-spacing:2px">LOCAL-FIRST WELLNESS WORKSPACE • © 2026</div>""",unsafe_allow_html=True)
 
 def page_survey():
     """Immersive Bloom Survey - Specialized organic UI with high-end animations."""
@@ -1922,10 +1865,10 @@ def page_survey():
 
     # Bloom Immersive Background
     st.markdown("""
-    <div class="login-bg-immersive" style="background: radial-gradient(circle at 50% 50%, #1e1b4b 0%, #0f172a 100%);"></div>
+    <div class="login-bg-immersive" style="background: radial-gradient(circle at 50% 50%, #2a1b14 0%, #17120f 100%);"></div>
     <div style="position:fixed; top:0; left:0; width:100%; height:100%; z-index:-1; overflow:hidden; opacity:0.4;">
-        <div style="position:absolute; top:-10%; left:-10%; width:50%; height:50%; background:radial-gradient(circle, #818cf8 0%, transparent 70%); filter:blur(80px); animation: bloomMove 15s infinite alternate;"></div>
-        <div style="position:absolute; bottom:-10%; right:-10%; width:50%; height:50%; background:radial-gradient(circle, #6366f1 0%, transparent 70%); filter:blur(80px); animation: bloomMove 20s infinite alternate-reverse;"></div>
+        <div style="position:absolute; top:-10%; left:-10%; width:50%; height:50%; background:radial-gradient(circle, #f59e0b 0%, transparent 70%); filter:blur(80px); animation: bloomMove 15s infinite alternate;"></div>
+        <div style="position:absolute; bottom:-10%; right:-10%; width:50%; height:50%; background:radial-gradient(circle, #ea580c 0%, transparent 70%); filter:blur(80px); animation: bloomMove 20s infinite alternate-reverse;"></div>
     </div>
     <style>
         @keyframes bloomMove {
@@ -1936,9 +1879,9 @@ def page_survey():
     """, unsafe_allow_html=True)
     
     themes = [
-        {"color": "#818cf8", "glow": "rgba(129, 140, 248, 0.4)", "bg": "linear-gradient(135deg, #818cf8, #6366f1)"}, # Intro/Emotional
-        {"color": "#a78bfa", "glow": "rgba(167, 139, 250, 0.3)", "bg": "linear-gradient(135deg, #a78bfa, #8b5cf6)"}, # Vitality
-        {"color": "#34d399", "glow": "rgba(52, 211, 153, 0.3)", "bg": "linear-gradient(135deg, #34d399, #059669)"}  # Balance
+        {"color": "#f59e0b", "glow": "rgba(245, 158, 11, 0.4)", "bg": "linear-gradient(135deg, #f59e0b, #ea580c)"}, # Intro/Emotional
+        {"color": "#f97316", "glow": "rgba(167, 139, 250, 0.3)", "bg": "linear-gradient(135deg, #f97316, #8b5cf6)"}, # Vitality
+        {"color": "#fb7185", "glow": "rgba(251, 113, 133, 0.3)", "bg": "linear-gradient(135deg, #fb7185, #059669)"}  # Balance
     ]
     
     theme_idx = max(0, min(st.session_state.survey_step, len(themes) - 1))
@@ -1956,7 +1899,7 @@ def page_survey():
         }}
         
         [data-testid="column"]:has(.bloom-survey-card) {{
-            background: rgba(15, 23, 42, 0.4) !important;
+            background: rgba(23, 18, 15, 0.4) !important;
             backdrop-filter: blur(24px) saturate(160%) !important;
             border: 1px solid rgba(255, 255, 255, 0.1) !important;
             border-radius: 50px !important;
@@ -2030,7 +1973,7 @@ def page_survey():
             border: none !important;
             padding: 4px 5px !important;
             font-size: 0.85rem !important;
-            color: #94a3b8 !important;
+            color: #c4b5a5 !important;
             border-bottom: 1px solid transparent !important;
             transition: all 0.3s ease;
         }}
@@ -2065,7 +2008,7 @@ def page_survey():
                         <span class="phase-badge">Student Induction</span>
                         <h1 class="bloom-title">Academic Alignment</h1>
                         <p style="font-size: 1.4rem; color: #fff; font-weight: 700; margin-bottom: 0.5rem; letter-spacing: 1px;">Welcome.</p>
-                        <p style="font-size: 1.2rem; color: #94a3b8; line-height: 1.6; margin-bottom: 1.5rem; max-width: 600px; margin-left: auto; margin-right: auto;">
+                        <p style="font-size: 1.2rem; color: #c4b5a5; line-height: 1.6; margin-bottom: 1.5rem; max-width: 600px; margin-left: auto; margin-right: auto;">
                             Take a moment to answer 10 focused questions to help personalize your space.
                         </p>
                         <p style="font-size: 1.1rem; color: {cur_theme['color']}; opacity: 0.9; font-weight: 600; letter-spacing: 2px; margin-bottom: 2.5rem;">YOUR JOURNEY STARTS HERE</p>
@@ -2160,7 +2103,7 @@ def page_survey():
             st.markdown(f"""
                 <div style="text-align:center; padding: 2rem;">
                     <h1 class="bloom-title-gradient" style="font-size:2.4rem; margin-bottom:0.5rem;">Setting up your space... ✨</h1>
-                    <p style="color:#94a3b8; font-size:1rem;">Personalizing your dashboard based on your answers.</p>
+                    <p style="color:#c4b5a5; font-size:1rem;">Personalizing your dashboard based on your answers.</p>
                 </div>
             """, unsafe_allow_html=True)
 
@@ -2174,11 +2117,11 @@ def page_survey():
             for i in range(101):
                 progress_bar.progress(i)
                 if i < 40:
-                    status_text.markdown(f"<p style='text-align:center; color:#94a3b8;'>{steps[0]}</p>", unsafe_allow_html=True)
+                    status_text.markdown(f"<p style='text-align:center; color:#c4b5a5;'>{steps[0]}</p>", unsafe_allow_html=True)
                 elif i < 80:
-                    status_text.markdown(f"<p style='text-align:center; color:#94a3b8;'>{steps[1]}</p>", unsafe_allow_html=True)
+                    status_text.markdown(f"<p style='text-align:center; color:#c4b5a5;'>{steps[1]}</p>", unsafe_allow_html=True)
                 else:
-                    status_text.markdown(f"<p style='text-align:center; color:#94a3b8;'>{steps[2]}</p>", unsafe_allow_html=True)
+                    status_text.markdown(f"<p style='text-align:center; color:#c4b5a5;'>{steps[2]}</p>", unsafe_allow_html=True)
                 time.sleep(0.03)
             
             percent = 100
@@ -2209,6 +2152,8 @@ def page_survey():
             col1, col2, col3 = st.columns([1.5, 1, 1.5])
             with col2:
                 if st.button("Go to Dashboard 🎓", type="primary", use_container_width=True):
+                    st.session_state.user_data['onboarded']=True
+                    persist_user_state()
                     st.session_state.page = 'main'
                     st.rerun()
 
@@ -2217,7 +2162,7 @@ def page_main():
 
     # DASHBOARD - BLOOM UPGRADE
     if st.session_state.current_view == "Dashboard":
-        render_bloom_background(theme_color="#818cf8")
+        render_bloom_background(theme_color="#f59e0b")
         
         # Check for missed and upcoming tasks
         check_missed_tasks()
@@ -2256,15 +2201,15 @@ def page_main():
             <div style="position: absolute; top:0; right:0; width: 150px; height: 150px; background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%); opacity: 0.3; z-index: 0;"></div>
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1.5rem; position: relative; z-index: 1;">
                 <div style="flex: 1; min-width: 280px;">
-                    <div class="phase-badge-premium" style="margin-bottom: 0.8rem; background: rgba(129, 140, 248, 0.1); border-color: rgba(129, 140, 248, 0.3); color: #818cf8;">{greeting_emoji} {greeting}</div>
+                    <div class="phase-badge-premium" style="margin-bottom: 0.8rem; background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); color: #f59e0b;">{greeting_emoji} {greeting}</div>
                     <h1 class="bloom-title-gradient" style="font-size: 3.5rem; margin: 0; line-height: 1.1; letter-spacing: -1px;">
                         Hello, {username}
                     </h1>
-                    <p style="font-size: 1.1rem; opacity: 0.8; font-weight: 300; letter-spacing: 0.5px; margin-top: 0.6rem; color: #94a3b8;">
+                    <p style="font-size: 1.1rem; opacity: 0.8; font-weight: 300; letter-spacing: 0.5px; margin-top: 0.6rem; color: #c4b5a5;">
                         {mood_message}
                     </p>
                 </div>
-                <div style="background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(10px); border: 1px solid rgba(129, 140, 248, 0.2); padding: 1.2rem 1.8rem; border-radius: 24px; display: flex; align-items: center; gap: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+                <div style="background: rgba(23, 18, 15, 0.6); backdrop-filter: blur(10px); border: 1px solid rgba(245, 158, 11, 0.2); padding: 1.2rem 1.8rem; border-radius: 24px; display: flex; align-items: center; gap: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
                     <div style="width: 45px; height: 45px; background: var(--primary); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; box-shadow: 0 0 15px var(--primary-glow);">🔔</div>
                     <div>
                         <div style="font-weight: 900; color: white; font-size: 1.4rem; line-height: 1;">{notification_count}</div>
@@ -2370,31 +2315,18 @@ def page_main():
                 st.markdown('''
                 <div class="bloom-card" style="padding: 1.5rem; margin-bottom: 1.5rem;">
                     <div class="card-header-premium" style="margin-bottom: 0; border: none; padding-bottom: 0;">
-                        <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #38bdf8, #818cf8);">📈</div>
+                        <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #f97316, #f59e0b);">📈</div>
                         <div>
-                            <h3 style="margin:0; font-size: 1.4rem;">Academic Focus Trends</h3>
-                            <p style="margin:0; font-size: 0.8rem; color: var(--text-muted);">Weekly cognitive performance metric</p>
+                            <h3 style="margin:0; font-size: 1.4rem;">Wellness Check-in</h3>
+                            <p style="margin:0; font-size: 0.8rem; color: var(--text-muted);">Current recorded wellness signals</p>
                         </div>
                     </div>
                 </div>
                 ''', unsafe_allow_html=True)
                 
-                # Mock data based on real stats - with chronological sorting
-                days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-                energy_base = st.session_state.stats_data.get('Energy', 7)
-                focus_base = st.session_state.stats_data.get('Focus', 6)
-                
-                trend_data = []
-                for d in days_order:
-                    trend_data.append({
-                        "Day": d, 
-                        "Energy": max(2, min(9, energy_base + random.randint(-1, 1))),
-                        "Focus": max(2, min(9, focus_base + random.randint(-1, 1)))
-                    })
-                df_trends = pd.DataFrame(trend_data).set_index("Day")
-                
-                # Render chart with a slight margin for "card" look
-                st.bar_chart(df_trends, height=300, use_container_width=True)
+                # Only show recorded values; never fabricate historical performance.
+                wellness_df=pd.DataFrame({"Metric":["Energy","Focus","Sleep","Stress"],"Score":[st.session_state.stats_data.get("Energy",0),st.session_state.stats_data.get("Focus",0),st.session_state.stats_data.get("Sleep",0),st.session_state.stats_data.get("Stress",0)]}).set_index("Metric")
+                st.bar_chart(wellness_df,height=300,use_container_width=True)
                 st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
             
             with col2:
@@ -2402,16 +2334,16 @@ def page_main():
                 st.markdown('''
                 <div class="bloom-card" style="padding: 1.5rem; margin-bottom: 1.5rem;">
                     <div class="card-header-premium" style="margin-bottom: 0; border: none; padding-bottom: 0;">
-                        <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #f472b6, #ec4899);">🎭</div>
+                        <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #fb7185, #fb7185);">🎭</div>
                         <h3 style="margin:0; font-size: 1.4rem;">Mood State</h3>
                     </div>
                 </div>
                 ''', unsafe_allow_html=True)
                 
                 mood = st.session_state.user_data.get('mood', 'Happy')
-                mood_colors = {'Happy': '#34d399', 'Neutral': '#818cf8', 'Anxious': '#fbbf24', 'Sad': '#a855f7'}
+                mood_colors = {'Happy': '#fb7185', 'Neutral': '#f59e0b', 'Anxious': '#fbbf24', 'Sad': '#f97316'}
                 mood_emojis = {"Happy":"😊","Neutral":"😐","Anxious":"😰","Sad":"😔"}
-                color = mood_colors.get(mood, '#818cf8')
+                color = mood_colors.get(mood, '#f59e0b')
                 emoji = mood_emojis.get(mood, "🧘")
                 
                 st.markdown(f"""
@@ -2436,7 +2368,7 @@ def page_main():
                 st.markdown(f"""
                 <div class="bloom-card" style="padding:1.5rem; text-align:center; border-style: dashed; border-color: rgba(255,255,255,0.1);">
                     <div style="font-size:0.75rem; letter-spacing:3px; color:var(--primary); font-weight:900; margin-bottom:12px; text-transform:uppercase; opacity:0.8;">Daily Resonance</div>
-                    <p style="font-size:1.05rem; font-weight:300; line-height:1.6; color:white; font-style: italic;">"{random.choice(quotes)}"</p>
+                    <p style="font-size:1.05rem; font-weight:300; line-height:1.6; color:white; font-style: italic;">"{quotes[datetime.now().timetuple().tm_yday % len(quotes)]}"</p>
                 </div>
                 """, unsafe_allow_html=True)
             
@@ -2444,7 +2376,7 @@ def page_main():
             st.markdown('''
             <div class="bloom-card" style="padding: 1.5rem; margin-bottom: 2rem;">
                 <div class="card-header-premium" style="margin-bottom: 1.5rem;">
-                    <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #10b981, #34d399);">✅</div>
+                    <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #f59e0b, #fb7185);">✅</div>
                     <h3 style="margin:0; font-size: 1.4rem;">Wellness Checklist</h3>
                 </div>
             ''', unsafe_allow_html=True)
@@ -2466,7 +2398,7 @@ def page_main():
                     status_style = "opacity: 0.4; filter: grayscale(1); border-color: rgba(255,255,255,0.05);" if st.session_state[key] else ""
                     st.markdown(f"""
                     <div class="task-premium" style="{status_style} margin-top: -5px; margin-bottom: 0.8rem;">
-                        <div class="task-icon-mini" style="color: #10b981;">✦</div>
+                        <div class="task-icon-mini" style="color: #f59e0b;">✦</div>
                         <div>
                             <div style="font-weight:700; font-size:1.05rem; color:var(--text-main);">{title}</div>
                             <div style="font-size:0.85rem; color:var(--text-muted); opacity: 0.8;">{desc}</div>
@@ -2476,7 +2408,7 @@ def page_main():
             
             # Progress bar
             completed_count = sum([st.session_state.task_1, st.session_state.task_2, st.session_state.task_3])
-            st.markdown(f"<div style='margin: 1.5rem 0 0.5rem 0; font-weight:700; display:flex; justify-content:space-between; font-size: 0.85rem; color: #94a3b8;'><span>Daily Goal Metric</span><span>{completed_count}/3 Completed</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='margin: 1.5rem 0 0.5rem 0; font-weight:700; display:flex; justify-content:space-between; font-size: 0.85rem; color: #c4b5a5;'><span>Daily Goal Metric</span><span>{completed_count}/3 Completed</span></div>", unsafe_allow_html=True)
             st.progress(completed_count/3)
             
             if completed_count == 3:
@@ -2524,7 +2456,7 @@ def page_main():
             st.markdown('''
             <div class="bloom-card" style="padding: 1.5rem; margin-bottom: 1.5rem;">
                 <div class="card-header-premium" style="margin-bottom: 2rem;">
-                    <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #a78bfa, #8b5cf6);">📊</div>
+                    <div class="card-icon-wrapper" style="background: linear-gradient(135deg, #f97316, #8b5cf6);">📊</div>
                     <h3 style="margin:0; font-size: 1.4rem;">Precision Analytics</h3>
                 </div>
             ''', unsafe_allow_html=True)
@@ -2573,142 +2505,32 @@ def page_main():
         </div>
         """, unsafe_allow_html=True)
 
-    # CHAT - COMING SOON
+    # CHAT - MENTOR AI
     elif st.session_state.current_view == "Chat":
-        render_bloom_background(theme_color="#818cf8")
-        st.markdown("""
-        <style>
-        @keyframes float-orb {
-            0%, 100% { transform: translateY(0px) scale(1); opacity: 0.6; }
-            50% { transform: translateY(-20px) scale(1.05); opacity: 1; }
-        }
-        @keyframes pulse-ring {
-            0% { transform: scale(0.9); opacity: 1; }
-            100% { transform: scale(1.4); opacity: 0; }
-        }
-        @keyframes text-shimmer {
-            0% { background-position: -200% center; }
-            100% { background-position: 200% center; }
-        }
-        .coming-soon-wrapper {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 70vh;
-            text-align: center;
-            padding: 3rem 1rem;
-        }
-        .cs-orb-container {
-            position: relative;
-            width: 140px;
-            height: 140px;
-            margin: 0 auto 2.5rem auto;
-        }
-        .cs-orb {
-            width: 140px;
-            height: 140px;
-            border-radius: 50%;
-            background: radial-gradient(circle at 35% 35%, #a78bfa, #6366f1 60%, #312e81);
-            box-shadow: 0 0 60px rgba(129, 140, 248, 0.5), 0 0 120px rgba(129, 140, 248, 0.2);
-            animation: float-orb 4s ease-in-out infinite;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 3.5rem;
-        }
-        .cs-ring {
-            position: absolute;
-            inset: -10px;
-            border-radius: 50%;
-            border: 2px solid rgba(129, 140, 248, 0.4);
-            animation: pulse-ring 2.5s ease-out infinite;
-        }
-        .cs-ring-2 { animation-delay: 1.25s; }
-        .cs-badge {
-            background: rgba(129, 140, 248, 0.15);
-            border: 1px solid rgba(129, 140, 248, 0.35);
-            border-radius: 100px;
-            padding: 6px 20px;
-            font-size: 0.75rem;
-            font-weight: 700;
-            letter-spacing: 3px;
-            text-transform: uppercase;
-            color: #a78bfa;
-            margin-bottom: 1.5rem;
-        }
-        .cs-title {
-            font-family: 'Outfit', sans-serif;
-            font-size: 3.8rem;
-            font-weight: 900;
-            letter-spacing: -2px;
-            margin: 0 0 1rem 0;
-            background: linear-gradient(90deg, #fff 0%, #a78bfa 40%, #818cf8 60%, #fff 100%);
-            background-size: 200% auto;
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            animation: text-shimmer 4s linear infinite;
-        }
-        .cs-subtitle {
-            font-size: 1.15rem;
-            color: #94a3b8;
-            max-width: 480px;
-            line-height: 1.7;
-            margin: 0 auto 2.5rem auto;
-            font-weight: 300;
-        }
-        .cs-features {
-            display: flex;
-            gap: 1rem;
-            flex-wrap: wrap;
-            justify-content: center;
-            margin-bottom: 2.5rem;
-        }
-        .cs-feature-chip {
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 100px;
-            padding: 8px 18px;
-            font-size: 0.85rem;
-            color: #cbd5e1;
-            font-weight: 500;
-        }
-        .cs-divider {
-            width: 80px;
-            height: 2px;
-            background: linear-gradient(90deg, transparent, #818cf8, transparent);
-            margin: 0 auto 2rem auto;
-            border-radius: 2px;
-        }
-        </style>
-        <div class="coming-soon-wrapper">
-            <div class="cs-orb-container">
-                <div class="cs-ring"></div>
-                <div class="cs-ring cs-ring-2"></div>
-                <div class="cs-orb">🧠</div>
-            </div>
-            <div class="cs-badge">Mentor AI</div>
-            <h1 class="cs-title">Coming Soon</h1>
-            <p class="cs-subtitle">
-                Your personal AI study mentor is being crafted with care.
-                Get ready for real-time guidance, smart answers, and a learning
-                experience that truly understands you.
-            </p>
-            <div class="cs-divider"></div>
-            <div class="cs-features">
-                <div class="cs-feature-chip">✨ 24/7 AI Guidance</div>
-                <div class="cs-feature-chip">📚 Study Support</div>
-                <div class="cs-feature-chip">🎯 Personalized Tips</div>
-                <div class="cs-feature-chip">💬 Smart Chat</div>
-                <div class="cs-feature-chip">🌙 Stress Relief</div>
-            </div>
-            <p style="font-size: 0.8rem; color: #475569; letter-spacing: 2px; text-transform: uppercase; font-weight: 600;">Stay Tuned — Big Things Are Coming 🚀</p>
-        </div>
-        """, unsafe_allow_html=True)
+        render_bloom_background(theme_color="#f97316")
+        st.markdown("""<div class="bloom-card" style="text-align:center"><div class="phase-badge-premium">MENTOR AI</div><h1 class="bloom-title-gradient">A calmer study conversation</h1><p style="color:var(--text-muted)">Ask about studying, focus, routines, or a difficult day.</p></div>""",unsafe_allow_html=True)
+        if not AI_ENABLED: st.warning("Mentor AI is offline. Add GOOGLE_API_KEY to Streamlit secrets or the environment.")
+        for msg in st.session_state.chat_history[-30:]:
+            with st.chat_message(msg.get("role","assistant")): st.markdown(msg.get("content",""))
+        prompt=st.chat_input("Talk to your mentor…")
+        if prompt:
+            prompt=prompt.strip()
+            if prompt:
+                st.session_state.chat_history.append({"role":"user","content":prompt})
+                if AI_ENABLED:
+                    with st.chat_message("assistant"):
+                        with st.spinner("Thinking…"):
+                            response=get_ai_response(prompt,history=st.session_state.chat_history[:-1])
+                        response=response.text if hasattr(response,"text") else response; st.markdown(response)
+                else:
+                    response="AI chat needs a configured GOOGLE_API_KEY."; st.chat_message("assistant").write(response)
+                st.session_state.chat_history.append({"role":"assistant","content":response}); persist_user_state(); st.rerun()
+        if st.session_state.chat_history and st.button("Clear conversation",key="clear_chat"):
+            st.session_state.chat_history=[]; persist_user_state(); st.rerun()
 
     # ARCADE - BLOOM VERSION
     elif st.session_state.current_view == "Games":
-        render_bloom_background(theme_color="#34d399")
+        render_bloom_background(theme_color="#fb7185")
         st.markdown(f"""
         <div class="bloom-card" style="text-align:center;">
             <div class="phase-badge-premium">Cognitive Lab</div>
@@ -2991,7 +2813,7 @@ def page_main():
     # FAQ - BLOOM VERSION
     # FAQ - SIMPLIFIED BLOOM VERSION
     elif st.session_state.current_view == "FAQ":
-        render_bloom_background(theme_color="#818cf8")
+        render_bloom_background(theme_color="#f59e0b")
         st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
         st.markdown('<div class="phase-badge-premium">KNOWLEDGE BASE</div>', unsafe_allow_html=True)
         st.markdown('<h1 class="bloom-title-gradient" style="font-size:3rem;">Chillmind FAQ</h1>', unsafe_allow_html=True)
@@ -3011,13 +2833,13 @@ def page_main():
 
     # HELP - SIMPLIFIED BLOOM VERSION
     elif st.session_state.current_view == "Help":
-        render_bloom_background(theme_color="#6366f1")
+        render_bloom_background(theme_color="#ea580c")
         st.markdown('<div class="bloom-card" style="text-align:center;">', unsafe_allow_html=True)
         st.markdown('<div class="phase-badge-premium">SUPPORT ORACLE</div>', unsafe_allow_html=True)
-        st.markdown('<h1 class="bloom-title-gradient" style="font-size:3rem; background:linear-gradient(135deg, #6366f1, #818cf8); -webkit-background-clip:text;">Support & Resources</h1>', unsafe_allow_html=True)
+        st.markdown('<h1 class="bloom-title-gradient" style="font-size:3rem; background:linear-gradient(135deg, #ea580c, #f59e0b); -webkit-background-clip:text;">Support & Resources</h1>', unsafe_allow_html=True)
         st.markdown('<p style="opacity:0.8; margin-bottom:2rem;">Need assistance with your neural experience?</p>', unsafe_allow_html=True)
         
-        st.markdown("<h4 style='color:#818cf8; margin-top:1.5rem;'>📧 App Support</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='color:#f59e0b; margin-top:1.5rem;'>📧 App Support</h4>", unsafe_allow_html=True)
         st.markdown("""
         <div style="font-size:1.1rem; line-height:1.8;">
         For technical issues, feedback, or general inquiries:<br>
@@ -3029,12 +2851,12 @@ def page_main():
 
     # CALENDAR
     elif st.session_state.current_view == "Calendar":
-        render_bloom_background(theme_color="#818cf8")
+        render_bloom_background(theme_color="#f59e0b")
         page_calendar()
 
     # NOTIFICATIONS
     elif st.session_state.current_view == "Notifications":
-        render_bloom_background(theme_color="#4f46e5")
+        render_bloom_background(theme_color="#c2410c")
         page_notifications()
 
     # PROFILE - ENHANCED VERSION
@@ -3391,41 +3213,41 @@ def page_profile():
     # Master KPI Header
     # Master KPI Header
     html_block = f"""
-<div class="bloom-card" style="margin-top: 1rem; border: 1px solid rgba(129, 140, 248, 0.4); background: linear-gradient(180deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.95));">
+<div class="bloom-card" style="margin-top: 1rem; border: 1px solid rgba(245, 158, 11, 0.4); background: linear-gradient(180deg, rgba(30, 41, 59, 0.8), rgba(23, 18, 15, 0.95));">
 <div style="display: flex; flex-wrap: wrap; gap: 3rem; align-items: center; position: relative;">
 <div style="position: relative;">
-<div style="width: 180px; height: 180px; border-radius: 20px; padding: 4px; background: linear-gradient(135deg, #3b82f6, #8b5cf6, #ec4899); box-shadow: 0 20px 40px rgba(139, 92, 246, 0.4); transform: rotate(-3deg);">
+<div style="width: 180px; height: 180px; border-radius: 20px; padding: 4px; background: linear-gradient(135deg, #fb923c, #8b5cf6, #fb7185); box-shadow: 0 20px 40px rgba(139, 92, 246, 0.4); transform: rotate(-3deg);">
 <div style="width: 100%; height: 100%; border-radius: 16px; overflow: hidden; background: var(--bg-dark); transform: rotate(3deg);">
 {avatar_html}
 </div>
 </div>
-<div class="phase-badge-premium" style="position: absolute; bottom: -10px; left: 50%; transform: translateX(-50%); font-size: 0.8rem; box-shadow: 0 5px 15px rgba(0,0,0,0.5); font-weight: 800; background: linear-gradient(90deg, #ec4899, #8b5cf6); color: white; border: none; letter-spacing: 2px;">GROWTH STAGE</div>
+<div class="phase-badge-premium" style="position: absolute; bottom: -10px; left: 50%; transform: translateX(-50%); font-size: 0.8rem; box-shadow: 0 5px 15px rgba(0,0,0,0.5); font-weight: 800; background: linear-gradient(90deg, #fb7185, #8b5cf6); color: white; border: none; letter-spacing: 2px;">GROWTH STAGE</div>
 </div>
 <div style="flex: 1; min-width: 300px;">
-<h1 class="bloom-title-gradient" style="font-size: 3.5rem; margin: 0; line-height: 1; background: linear-gradient(90deg, #fff, #a78bfa); -webkit-background-clip: text;">jaro</h1>
+<h1 class="bloom-title-gradient" style="font-size: 3.5rem; margin: 0; line-height: 1; background: linear-gradient(90deg, #fff, #f97316); -webkit-background-clip: text;">jaro</h1>
 <div style="font-size: 1.2rem; font-weight: 500; color: #cbd5e1; margin-top: 12px; font-style: italic;">"Architecting the future."</div>
 <div style="display: flex; gap: 1.5rem; margin-top: 2rem; flex-wrap: wrap;">
 <div style="background: rgba(0,0,0,0.3); padding: 1rem 1.5rem; border-radius: 16px; border: 1px solid rgba(255,255,255,0.05); backdrop-filter: blur(10px); flex: 1;">
-<div style="font-size: 0.75rem; color: #a78bfa; text-transform: uppercase; font-weight: 800; letter-spacing: 1.5px;">Improvement Velocity</div>
+<div style="font-size: 0.75rem; color: #f97316; text-transform: uppercase; font-weight: 800; letter-spacing: 1.5px;">Improvement Velocity</div>
 <div style="font-size: 1.8rem; font-weight: 800; color: white; margin-top: 4px; display: flex; align-items: baseline; gap: 8px;">
-+12.4% <span style="font-size: 1rem; color: #34d399;">▲ High</span>
++12.4% <span style="font-size: 1rem; color: #fb7185;">▲ High</span>
 </div>
 </div>
 <div style="background: rgba(0,0,0,0.3); padding: 1rem 1.5rem; border-radius: 16px; border: 1px solid rgba(255,255,255,0.05); backdrop-filter: blur(10px); flex: 1;">
-<div style="font-size: 0.75rem; color: #34d399; text-transform: uppercase; font-weight: 800; letter-spacing: 1.5px;">Consistency Streak</div>
+<div style="font-size: 0.75rem; color: #fb7185; text-transform: uppercase; font-weight: 800; letter-spacing: 1.5px;">Consistency Streak</div>
 <div style="font-size: 1.8rem; font-weight: 800; color: white; margin-top: 4px;">
 🔥 {st.session_state.user_data.get('streak', 0)} Days
 </div>
 </div>
 </div>
-<div style="margin-top: 1.5rem; padding: 1rem 1.5rem; background: linear-gradient(90deg, rgba(52,211,153,0.1), rgba(16,185,129,0.1)); border-radius: 16px; border-left: 4px solid #10b981; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
-<div style="font-size: 0.8rem; color: #10b981; text-transform: uppercase; font-weight: 800; letter-spacing: 1px; margin-bottom: 5px;">🧬 NEURAL SYNTHESIS PROTOCOL</div>
+<div style="margin-top: 1.5rem; padding: 1rem 1.5rem; background: linear-gradient(90deg, rgba(52,211,153,0.1), rgba(16,185,129,0.1)); border-radius: 16px; border-left: 4px solid #f59e0b; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+<div style="font-size: 0.8rem; color: #f59e0b; text-transform: uppercase; font-weight: 800; letter-spacing: 1px; margin-bottom: 5px;">🧬 NEURAL SYNTHESIS PROTOCOL</div>
 <div style="display: flex; align-items: center; justify-content: space-between;">
 <div style="font-size: 1.1rem; color: white; font-weight: 600;">System Architecture Mastery • Phase 3</div>
 <div style="font-size: 1rem; color: #cbd5e1;">75%</div>
 </div>
 <div style="width: 100%; height: 6px; background: rgba(0,0,0,0.5); border-radius: 5px; margin-top: 8px; overflow: hidden;">
-<div style="height: 100%; width: 75%; background: linear-gradient(90deg, #10b981, #34d399); border-radius: 5px;"></div>
+<div style="height: 100%; width: 75%; background: linear-gradient(90deg, #f59e0b, #fb7185); border-radius: 5px;"></div>
 </div>
 </div>
 </div>
@@ -3441,17 +3263,17 @@ def page_profile():
     
     with tab1:
         st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
-        st.markdown('<div class="phase-badge-premium" style="margin-bottom: 1rem; background: linear-gradient(90deg, #3b82f6, #2dd4bf); color: white; border:none;">METRICS & INSIGHTS</div>', unsafe_allow_html=True)
+        st.markdown('<div class="phase-badge-premium" style="margin-bottom: 1rem; background: linear-gradient(90deg, #fb923c, #2dd4bf); color: white; border:none;">METRICS & INSIGHTS</div>', unsafe_allow_html=True)
         st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 2rem; font-size: 2.2rem;">Core Improvement Analytics</h3>', unsafe_allow_html=True)
         
         ca1, ca2 = st.columns([1, 1.5])
         
         with ca1:
             st.markdown(f"""
-            <div class="wellness-card-stat" style="margin-bottom: 1.5rem; border-left: 4px solid #3b82f6; background: rgba(59, 130, 246, 0.05);">
+            <div class="wellness-card-stat" style="margin-bottom: 1.5rem; border-left: 4px solid #fb923c; background: rgba(59, 130, 246, 0.05);">
                 <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 1px;">Cognitive Load Capacity</div>
                 <div style="font-size: 3rem; font-weight: 900; color: white;">{st.session_state.stats_data.get('Focus', 6) * 11.2:.1f}%</div>
-                <div style="font-size: 0.9rem; color: #34d399; margin-top: 5px; font-weight: 600;">↑ 4.2% from last week</div>
+                <div style="font-size: 0.9rem; color: #fb7185; margin-top: 5px; font-weight: 600;">↑ 4.2% from last week</div>
             </div>
             """, unsafe_allow_html=True)
             
@@ -3464,10 +3286,10 @@ def page_profile():
             """, unsafe_allow_html=True)
 
             st.markdown(f"""
-            <div class="wellness-card-stat" style="border-left: 4px solid #ec4899; background: rgba(236, 72, 153, 0.05);">
+            <div class="wellness-card-stat" style="border-left: 4px solid #fb7185; background: rgba(251, 113, 133, 0.05);">
                 <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 1px;">Recovery Index</div>
                 <div style="font-size: 3rem; font-weight: 900; color: white;">{st.session_state.stats_data.get('Sleep', 7) * 9.8:.1f}/100</div>
-                <div style="font-size: 0.9rem; color: #34d399; margin-top: 5px; font-weight: 600;">Optimal Regeneration</div>
+                <div style="font-size: 0.9rem; color: #fb7185; margin-top: 5px; font-weight: 600;">Optimal Regeneration</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -3495,7 +3317,7 @@ def page_profile():
                 <div style="flex:1;">
                     <div style="color: white; font-weight: 700; margin-bottom: 5px;">Trend Analysis</div>
                     Pattern shows a steady upward trajectory. Minor dips correlate with weekends or low-sleep days. 
-                    <br><strong style="color: #34d399;">Action:</strong> Maintain current workload intensity.
+                    <br><strong style="color: #fb7185;">Action:</strong> Maintain current workload intensity.
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -3574,7 +3396,7 @@ def page_profile():
         
     with tab3:
         st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
-        st.markdown('<div class="phase-badge-premium" style="margin-bottom: 1rem; background: linear-gradient(90deg, #a855f7, #ec4899); color: white; border:none;">AI FORECAST</div>', unsafe_allow_html=True)
+        st.markdown('<div class="phase-badge-premium" style="margin-bottom: 1rem; background: linear-gradient(90deg, #f97316, #fb7185); color: white; border:none;">AI FORECAST</div>', unsafe_allow_html=True)
         st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 2rem; font-size: 2.2rem;">Future Probability Matrix</h3>', unsafe_allow_html=True)
         
         st.markdown("""
@@ -3584,10 +3406,10 @@ def page_profile():
         """, unsafe_allow_html=True)
         
         projections = [
-            ("Week 2", "Cognitive stamina increase by 12%", "High Probability", "#34d399"),
-            ("Month 1", "Mastery of current focus domain fundamentals", "Very High Probability", "#3b82f6"),
+            ("Week 2", "Cognitive stamina increase by 12%", "High Probability", "#fb7185"),
+            ("Month 1", "Mastery of current focus domain fundamentals", "Very High Probability", "#fb923c"),
             ("Month 3", "Top 5% efficiency rating in peer group", "Medium Probability", "#f59e0b"),
-            ("Year 1", "Expert tier pattern recognition and output", "Variable Probability", "#ec4899")
+            ("Year 1", "Expert tier pattern recognition and output", "Variable Probability", "#fb7185")
         ]
         
         for time_frame, outcome, prob, color in projections:
@@ -3656,8 +3478,8 @@ def page_notifications():
 
     for i, n in enumerate(paginator.paginated_items):
         is_read = n.get('read', False)
-        bg = "rgba(255,255,255,0.02)" if is_read else "rgba(129, 140, 248, 0.1)"
-        border = "var(--glass-border)" if is_read else "rgba(129, 140, 248, 0.3)"
+        bg = "rgba(255,255,255,0.02)" if is_read else "rgba(245, 158, 11, 0.1)"
+        border = "var(--glass-border)" if is_read else "rgba(245, 158, 11, 0.3)"
         
         msg = n.get('text') or n.get('message', 'No message')
         time_str = ""
@@ -3865,3 +3687,5 @@ elif st.session_state.page == 'survey':
     page_survey()
 elif st.session_state.page == 'main': 
     page_main()
+
+persist_user_state()
