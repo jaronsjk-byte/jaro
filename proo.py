@@ -3363,11 +3363,11 @@ def page_profile():
     with tab3:
         st.markdown('<div class="bloom-card">', unsafe_allow_html=True)
         st.markdown('<div class="phase-badge-premium" style="margin-bottom: 1rem; background: linear-gradient(90deg, #a855f7, #ec4899); color: white; border:none;">AI FORECAST</div>', unsafe_allow_html=True)
-        st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 2rem; font-size: 2.2rem;">Future Probability Matrix</h3>', unsafe_allow_html=True)
+        st.markdown('<h3 class="bloom-title-gradient" style="margin-bottom: 2rem; font-size: 2.2rem;">Consistency Signal</h3>', unsafe_allow_html=True)
         
         st.markdown("""
         <p style="color: var(--text-muted); font-size: 1.1rem; line-height: 1.6; margin-bottom: 2rem;">
-            Based on your current improvement velocity and consistency streaks, the AI has extrapolated your skill acquisition timeline.
+            This summarizes the signals currently recorded in your account. It is not a prediction or medical assessment.
         </p>
         """, unsafe_allow_html=True)
         
