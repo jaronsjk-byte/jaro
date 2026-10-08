@@ -3371,30 +3371,14 @@ def page_profile():
         </p>
         """, unsafe_allow_html=True)
         
-        projections = [
-            ("Week 2", "Cognitive stamina increase by 12%", "High Probability", "#34d399"),
-            ("Month 1", "Mastery of current focus domain fundamentals", "Very High Probability", "#3b82f6"),
-            ("Month 3", "Top 5% efficiency rating in peer group", "Medium Probability", "#f59e0b"),
-            ("Year 1", "Expert tier pattern recognition and output", "Variable Probability", "#ec4899")
-        ]
-        
-        for time_frame, outcome, prob, color in projections:
-            st.markdown(f"""
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 1.5rem; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); border-radius: 16px; margin-bottom: 1rem; transition: all 0.3s ease;">
-                <div style="display: flex; align-items: center; gap: 1.5rem;">
-                    <div style="background: rgba(255,255,255,0.1); padding: 0.5rem 1rem; border-radius: 8px; font-weight: 800; font-family: 'Outfit', sans-serif; color: white; width: 100px; text-align: center;">
-                        {time_frame}
-                    </div>
-                    <div style="font-size: 1.1rem; color: #e2e8f0; font-weight: 500;">
-                        {outcome}
-                    </div>
-                </div>
-                <div style="color: {color}; font-weight: 700; font-size: 0.9rem; letter-spacing: 1px; text-transform: uppercase;">
-                    {prob}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
+        completed=sum([st.session_state.task_1,st.session_state.task_2,st.session_state.task_3])
+        focus=float(st.session_state.stats_data.get("Focus",0))
+        breathing=len(st.session_state.breathing_history)
+        consistency=round((completed/3*50)+(focus/10*30)+(min(breathing/10,1)*20))
+        st.markdown(f"""<div class="bloom-card" style="padding:1.5rem"><div style="font-size:.8rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px">Current consistency signal</div><div style="font-size:3rem;font-weight:900;color:var(--primary)">{consistency}%</div><p style="color:var(--text-muted);margin:0">A simple score from recorded tasks, focus check-in and breathing history. It is not a prediction of your future.</p></div>""",unsafe_allow_html=True)
+        for label,value in [("Tasks today",f"{completed}/3"),("Focus check-in",f"{focus:.0f}/10"),("Breathing sessions",str(breathing))]:
+            st.markdown(f"<div style='display:flex;justify-content:space-between;padding:1rem;background:rgba(255,255,255,.03);border:1px solid var(--glass-border);border-radius:14px;margin-bottom:.7rem'><span>{label}</span><strong>{value}</strong></div>",unsafe_allow_html=True)
+
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
