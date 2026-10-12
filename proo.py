@@ -53,8 +53,12 @@ if not hasattr(st, "toggle"):
     st.toggle = _toggle
 
 # --- 1. CONFIGURATION ---
-YOUR_API_KEY = "AIzaSyBgDMfIun--n_ehfbrwAuPgxBK34toxZz4"
-GOOGLE_API_KEY = YOUR_API_KEY
+# SECURITY: this key used to be hardcoded here and was committed to this
+# PUBLIC repository. That key is compromised and MUST be rotated in Google AI
+# Studio -- removing it from this file is not enough, it stays in git history.
+# Provide it via the environment instead. See .env.example.
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
+YOUR_API_KEY = GOOGLE_API_KEY  # retained for backwards compatibility
 
 # --- 2. SETUP API ---
 AI_ENABLED = bool(GOOGLE_API_KEY) and GENAI_AVAILABLE
@@ -1200,6 +1204,32 @@ st.markdown(f"""
 # --- 5. LOGIC & INTELLIGENCE ---
 def get_ai_response(prompt_text, history=None, image=None, stream=False):
     """Enhanced AI response using Gemini when available, falls back to local intents."""
+    
+    # --- AI ANSWERS (feature-flagged, default OFF) ------------------------
+    # Support/how-to questions are answered by the ChillMind answers service,
+    # which is grounded on docs/help/*.md and cites the article it used.
+    # Any failure falls through to the existing behaviour below, unchanged.
+    if not image:
+        try:
+            from chillmind.flags import ai_answers_enabled
+            from chillmind.ai import answers as _answers
+
+            if ai_answers_enabled() and _answers.looks_like_support_question(prompt_text):
+                _ctx = str(st.session_state.get("user_name", "anonymous"))
+                _key = _answers.idempotency_key(_ctx, prompt_text)
+                # Streamlit reruns the script on every interaction; do not pay twice.
+                if not _answers.already_answered(_key):
+                    _chunks, _citations = _answers.answer_stream(prompt_text, _ctx)
+                    if stream:
+                        class _Chunk:
+                            def __init__(self, text): self.text = text
+                        return (_Chunk(t) for t in _chunks)
+                    _text = "".join(_chunks)
+                    if _text.strip():
+                        return _text
+        except Exception as _exc:  # noqa: BLE001 - never break the chat
+            print(f"AI answers unavailable, falling back: {_exc}")
+    # --- end AI ANSWERS ---------------------------------------------------
     
     # First try local intent response for common queries
     if not image:
