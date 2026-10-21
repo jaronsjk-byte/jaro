@@ -43,7 +43,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Scan tracked files for key-shaped strings
         run: |
-          if git grep -nE 'AIzaSy|pplx-[A-Za-z0-9]|sk-[A-Za-z0-9]{16}' -- . ; then
+          # Split the patterns so this workflow does not match its own scanner.
+          google_pattern='AI''zaSy'
+          perplexity_pattern='pplx-''[A-Za-z0-9]'
+          generic_pattern='sk-''[A-Za-z0-9]{16}'
+          pattern="${google_pattern}|${perplexity_pattern}|${generic_pattern}"
+          if git grep -nE "$pattern" -- . ; then
             echo "::error::A key-shaped string is committed. Remove it and rotate the key."
             exit 1
           fi
