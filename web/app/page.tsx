@@ -74,7 +74,7 @@ export default function Home() {
       <div className="ambient ambient-two" aria-hidden="true" />
       <header className="topbar">
         <a className="brand" href="#" aria-label="ChillMind home"><span className="brand-mark"><span /></span><span>chillmind<span className="brand-dot">.</span></span></a>
-        <nav className="top-nav" aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="#principles">Our approach</a></nav>
+        <nav className="top-nav" aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="#principles">Our approach</a><a href="/lab">Lab workspace</a></nav>
         <a className="nav-cta" href="#ask">Ask a question <span aria-hidden="true">↗</span></a>
       </header>
 
