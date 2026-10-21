@@ -97,7 +97,7 @@ export default function Home() {
 
       <section className="ask-section" id="ask">
         <div className="section-kicker">THE ANSWER DESK <span>—</span> ALWAYS START WITH A QUESTION</div>
-        <div className="ask-heading-row"><div><h2>What’s on your mind?</h2><p>Ask about features, settings, or finding your way around ChillMind.</p></div><div className="privacy-note"><span className="lock-icon">⌑</span> Your question stays yours</div></div>
+        <div className="ask-heading-row"><div><h2>What’s on your mind?</h2><p>Ask about features, settings, or finding your way around ChillMind.</p></div><div className="privacy-note"><span className="lock-icon">⌑</span> Avoid sharing personal details</div></div>
         <form className="question-box" onSubmit={askQuestion}>
           <label className="sr-only" htmlFor="question">Your question</label>
           <textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Try “How do I organise my week?”" maxLength={2000} rows={3} />
